@@ -1,3 +1,3 @@
 [submodule "tron-shared"]
 	path = tron-shared
-	url = ../tron
+	url = https://github.com/starfederation/tron.git
