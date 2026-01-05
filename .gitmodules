@@ -1,0 +1,3 @@
+[submodule "tron-shared"]
+	path = tron-shared
+	url = ../tron
