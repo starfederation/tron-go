@@ -9,13 +9,8 @@ format backed by HAMT maps and vector tries for copy-on-write updates.
 
 ## Spec
 
-- TRON binary format: `tron-shared/SPEC.md`
+- TRON binary format: `tron-shared/SPEC.md` (spec: https://github.com/starfederation/tron/blob/main/SPEC.md)
 - HAMT/vector trie overview: `tron-shared/PRIMER.md`
-
-## Other implementations
-
-- Spec + shared fixtures: https://github.com/starfederation/tron
-- TypeScript implementation: https://github.com/starfederation/tron-ts
 
 ## Implemented features
 
