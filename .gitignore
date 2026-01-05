@@ -1,0 +1,5 @@
+*.test
+*.out
+.serena/
+bench_*.txt
+bench_path_*.txt
