@@ -3,7 +3,7 @@ package merge
 import (
 	"fmt"
 
-	tron "tron"
+	tron "github.com/starfederation/tron-go"
 )
 
 // ApplyMergePatch applies JSON Merge Patch semantics to a target document.

@@ -7,6 +7,10 @@ import (
 )
 
 func mapGet(doc []byte, off uint32, key []byte, depth int) (Value, bool, error) {
+	return mapGetHashed(doc, off, key, XXH32(key, 0), depth)
+}
+
+func mapGetHashed(doc []byte, off uint32, key []byte, hash uint32, depth int) (Value, bool, error) {
 	h, node, err := NodeSliceAt(doc, off)
 	if err != nil {
 		return Value{}, false, err
@@ -33,19 +37,24 @@ func mapGet(doc []byte, off uint32, key []byte, depth int) (Value, bool, error) 
 		return Value{}, false, err
 	}
 	defer releaseMapBranchNode(&branch)
-	slot := uint8((XXH32(key, 0) >> (depth * 4)) & hamtMask)
+	slot := uint8((hash >> (depth * 4)) & hamtMask)
 	if ((branch.Bitmap >> slot) & 1) == 0 {
 		return Value{}, false, nil
 	}
 	mask := uint16((uint32(1) << slot) - 1)
 	idx := popcount16(branch.Bitmap & mask)
 	child := branch.Children[idx]
-	return mapGet(doc, child, key, depth+1)
+	return mapGetHashed(doc, child, key, hash, depth+1)
 }
 
 // MapGet returns the value for key under the map node at rootOff.
 func MapGet(doc []byte, rootOff uint32, key []byte) (Value, bool, error) {
 	return mapGet(doc, rootOff, key, 0)
+}
+
+// MapGetHashed returns the value for key under the map node at rootOff using a precomputed hash.
+func MapGetHashed(doc []byte, rootOff uint32, key []byte, hash uint32) (Value, bool, error) {
+	return mapGetHashed(doc, rootOff, key, hash, 0)
 }
 
 // MapHas reports whether key exists under the map node at rootOff.
@@ -61,12 +70,20 @@ func MapSetNode(builder *Builder, rootOff uint32, key []byte, val Value) (uint32
 	return mapSet(builder.buf, rootOff, key, val, 0, builder)
 }
 
+// MapSetNodeHashed updates a map node at rootOff using a precomputed hash.
+func MapSetNodeHashed(builder *Builder, rootOff uint32, key []byte, hash uint32, val Value) (uint32, bool, error) {
+	if builder == nil {
+		return 0, false, fmt.Errorf("nil builder")
+	}
+	return mapSetHashed(builder.buf, rootOff, key, val, hash, 0, builder)
+}
+
 // MapDelNode deletes a key from a map node at rootOff and returns the new root offset.
 func MapDelNode(builder *Builder, rootOff uint32, key []byte) (uint32, bool, error) {
 	if builder == nil {
 		return 0, false, fmt.Errorf("nil builder")
 	}
-	return mapDel(builder.buf, rootOff, key, 0, builder)
+	return mapDelete(builder.buf, rootOff, key, 0, builder)
 }
 
 // EmptyMapRoot returns a new empty map root node offset.
@@ -83,6 +100,10 @@ func mapHas(doc []byte, off uint32, key []byte, depth int) (bool, error) {
 }
 
 func mapSet(doc []byte, off uint32, key []byte, val Value, depth int, builder *Builder) (uint32, bool, error) {
+	return mapSetHashed(doc, off, key, val, XXH32(key, 0), depth, builder)
+}
+
+func mapSetHashed(doc []byte, off uint32, key []byte, val Value, hash uint32, depth int, builder *Builder) (uint32, bool, error) {
 	if depth > maxDepth32 {
 		return 0, false, fmt.Errorf("map depth exceeds max")
 	}
@@ -132,14 +153,14 @@ func mapSet(doc []byte, off uint32, key []byte, val Value, depth int, builder *B
 		return 0, false, err
 	}
 	defer releaseMapBranchNode(&branch)
-	slot := uint8((XXH32(key, 0) >> (depth * 4)) & hamtMask)
+	slot := uint8((hash >> (depth * 4)) & hamtMask)
 	mask := uint16((uint32(1) << slot) - 1)
 	idx := popcount16(branch.Bitmap & mask)
 	hasChild := ((branch.Bitmap >> slot) & 1) == 1
 
 	if hasChild {
 		child := branch.Children[idx]
-		newChild, changed, err := mapSet(doc, child, key, val, depth+1, builder)
+		newChild, changed, err := mapSetHashed(doc, child, key, val, hash, depth+1, builder)
 		if err != nil {
 			return 0, false, err
 		}
@@ -183,7 +204,7 @@ func mapSet(doc []byte, off uint32, key []byte, val Value, depth int, builder *B
 	return newOff, true, nil
 }
 
-func mapDel(doc []byte, off uint32, key []byte, depth int, builder *Builder) (uint32, bool, error) {
+func mapDelete(doc []byte, off uint32, key []byte, depth int, builder *Builder) (uint32, bool, error) {
 	if depth > maxDepth32 {
 		return 0, false, fmt.Errorf("map depth exceeds max")
 	}
@@ -240,7 +261,7 @@ func mapDel(doc []byte, off uint32, key []byte, depth int, builder *Builder) (ui
 		return off, false, nil
 	}
 	child := branch.Children[idx]
-	newChild, changed, err := mapDel(doc, child, key, depth+1, builder)
+	newChild, changed, err := mapDelete(doc, child, key, depth+1, builder)
 	if err != nil {
 		return 0, false, err
 	}

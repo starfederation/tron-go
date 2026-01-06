@@ -1,13 +1,15 @@
-module tron
+module github.com/starfederation/tron-go
 
 go 1.25
 
 require (
+	github.com/alecthomas/kong v1.13.0
 	github.com/delaneyj/toolbelt v0.7.6
 	github.com/fxamacker/cbor/v2 v2.6.0
 	github.com/minio/simdjson-go v0.4.5
 	golang.org/x/net v0.48.0
 	golang.org/x/text v0.32.0
+	golang.org/x/tools v0.40.0
 )
 
 require (
@@ -24,6 +26,7 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	golang.org/x/exp v0.0.0-20251125195548-87e1e737ad39 // indirect
+	golang.org/x/mod v0.31.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect

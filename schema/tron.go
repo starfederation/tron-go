@@ -5,7 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 
-	tron "tron"
+	tron "github.com/starfederation/tron-go"
 )
 
 const DefaultTRONSchemaURL = "mem://schema"

@@ -3,7 +3,7 @@ package path
 import (
 	"sync"
 
-	tron "tron"
+	tron "github.com/starfederation/tron-go"
 )
 
 var (

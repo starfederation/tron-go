@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"unsafe"
 
-	tron "tron"
+	tron "github.com/starfederation/tron-go"
 )
 
 type nodeType int

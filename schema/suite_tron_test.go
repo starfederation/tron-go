@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	tron "tron"
+	tron "github.com/starfederation/tron-go"
 )
 
 var suiteSkip = []string{

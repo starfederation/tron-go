@@ -1,5 +1,12 @@
 *.test
 *.out
 .serena/
+bin/
+**/*.exe
+**/*.dll
+**/*.dylib
+**/*.so
+**/*.a
+**/*.o
 bench_*.txt
 bench_path_*.txt

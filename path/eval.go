@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	tron "tron"
+	tron "github.com/starfederation/tron-go"
 )
 
 // Search compiles and evaluates a JMESPath expression against a TRON document.

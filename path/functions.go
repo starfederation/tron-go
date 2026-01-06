@@ -10,7 +10,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	tron "tron"
+	tron "github.com/starfederation/tron-go"
 )
 
 type jpType string

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"math"
 
-	tron "tron"
+	tron "github.com/starfederation/tron-go"
 )
 
 type jKind int

@@ -64,3 +64,19 @@ tasks:
       PKG: "{{.PKG | default \"./...\"}}"
     cmds:
       - go test -run=^$ -fuzz "{{.NAME}}" -fuzztime "{{.TIME}}" "{{.PKG}}"
+
+  trongen:build:
+    desc: Build the trongen generator binary.
+    cmds:
+      - mkdir -p ./bin
+      - go build -o ./bin/trongen ./cmd/trongen
+
+  trongen:install:
+    desc: Install the trongen generator binary.
+    cmds:
+      - go install ./cmd/trongen
+
+  trongen:example:
+    desc: Generate trongen output for the example package.
+    cmds:
+      - go run ./cmd/trongen --dir ./examples/trongen/basic

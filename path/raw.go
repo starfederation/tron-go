@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	tron "tron"
+	tron "github.com/starfederation/tron-go"
 )
 
 const hamtMaxDepth = 7

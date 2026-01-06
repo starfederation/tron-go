@@ -3,7 +3,7 @@ package path
 import (
 	"fmt"
 
-	tron "tron"
+	tron "github.com/starfederation/tron-go"
 )
 
 type stepKind int
