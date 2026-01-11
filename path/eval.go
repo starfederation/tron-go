@@ -26,7 +26,8 @@ func (e *Expr) Search(doc []byte) (tron.Value, error) {
 	if err != nil {
 		return tron.Value{}, err
 	}
-	intr := interpreter{}
+	intr := getInterpreter()
+	defer putInterpreter(intr)
 	out, err := intr.eval(e.root, root)
 	if err != nil {
 		return tron.Value{}, err

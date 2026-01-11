@@ -1,29 +1,21 @@
 package path
 
 import (
-	"sync"
+	"github.com/delaneyj/toolbelt"
 
 	tron "github.com/starfederation/tron-go"
 )
 
 var (
-	valueSlicePool = sync.Pool{
-		New: func() any {
-			return make([]tron.Value, 0, 16)
-		},
-	}
-	boolSlicePool = sync.Pool{
-		New: func() any {
-			return make([]bool, 0, 16)
-		},
-	}
+	valueSlicePool = toolbelt.New(func() []tron.Value { return make([]tron.Value, 0, 16) })
+	boolSlicePool  = toolbelt.New(func() []bool { return make([]bool, 0, 16) })
 )
 
 func getValueSlice(n int) []tron.Value {
 	if n <= 0 {
 		return nil
 	}
-	s := valueSlicePool.Get().([]tron.Value)
+	s := valueSlicePool.Get()
 	if cap(s) < n {
 		return make([]tron.Value, n)
 	}
@@ -45,7 +37,7 @@ func getBoolSlice(n int) []bool {
 	if n <= 0 {
 		return nil
 	}
-	s := boolSlicePool.Get().([]bool)
+	s := boolSlicePool.Get()
 	if cap(s) < n {
 		return make([]bool, n)
 	}
