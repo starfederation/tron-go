@@ -103,22 +103,18 @@ var (
 )
 
 func trongenProxyMapRoot(doc []byte) (uint32, error) {
-	docType, err := DetectDocType(doc)
-	if err != nil {
+	if _, err := DetectDocType(doc); err != nil {
 		return 0, err
-	}
-	if docType != DocTree {
-		return 0, trongenProxyErrNotTree
 	}
 	tr, err := ParseTrailer(doc)
 	if err != nil {
 		return 0, err
 	}
-	header, _, err := NodeSliceAt(doc, tr.RootOffset)
+	root, err := DecodeValueAt(doc, tr.RootOffset)
 	if err != nil {
 		return 0, err
 	}
-	if header.KeyType != KeyMap {
+	if root.Type != TypeMap {
 		return 0, trongenProxyErrRootNotMap
 	}
 	return tr.RootOffset, nil
@@ -222,69 +218,33 @@ func trongenProxyValueFromGo(builder *Builder, v any) (Value, error) {
 	if err != nil {
 		return Value{}, err
 	}
-	docType, err := DetectDocType(doc)
+	if _, err := DetectDocType(doc); err != nil {
+		return Value{}, err
+	}
+	tr, err := ParseTrailer(doc)
 	if err != nil {
 		return Value{}, err
 	}
-	switch docType {
-	case DocScalar:
-		return DecodeScalarDocument(doc)
-	case DocTree:
-		tr, err := ParseTrailer(doc)
-		if err != nil {
-			return Value{}, err
-		}
-		header, _, err := NodeSliceAt(doc, tr.RootOffset)
-		if err != nil {
-			return Value{}, err
-		}
-		var val Value
-		switch header.KeyType {
-		case KeyMap:
-			val = Value{Type: TypeMap, Offset: tr.RootOffset}
-		case KeyArr:
-			val = Value{Type: TypeArr, Offset: tr.RootOffset}
-		default:
-			return Value{}, errors.New("unknown root node type")
-		}
-		return CloneValueFromDoc(doc, val, builder)
-	default:
-		return Value{}, errors.New("unknown document type")
+	root, err := DecodeValueAt(doc, tr.RootOffset)
+	if err != nil {
+		return Value{}, err
 	}
+	return CloneValueFromDoc(doc, root, builder)
 }
 
 func trongenProxyDocumentToAny(doc []byte) (any, error) {
-	docType, err := DetectDocType(doc)
+	if _, err := DetectDocType(doc); err != nil {
+		return nil, err
+	}
+	tr, err := ParseTrailer(doc)
 	if err != nil {
 		return nil, err
 	}
-	switch docType {
-	case DocScalar:
-		val, err := DecodeScalarDocument(doc)
-		if err != nil {
-			return nil, err
-		}
-		return valueToAny(doc, val)
-	case DocTree:
-		tr, err := ParseTrailer(doc)
-		if err != nil {
-			return nil, err
-		}
-		header, _, err := NodeSliceAt(doc, tr.RootOffset)
-		if err != nil {
-			return nil, err
-		}
-		switch header.KeyType {
-		case KeyMap:
-			return valueMapToAny(doc, tr.RootOffset)
-		case KeyArr:
-			return valueArrayToAny(doc, tr.RootOffset)
-		default:
-			return nil, errors.New("unknown root node type")
-		}
-	default:
-		return nil, errors.New("unknown document type")
+	root, err := DecodeValueAt(doc, tr.RootOffset)
+	if err != nil {
+		return nil, err
 	}
+	return valueToAny(doc, root)
 }
 {{else}}
 var (

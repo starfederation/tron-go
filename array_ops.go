@@ -87,28 +87,21 @@ func ArrSliceDocument(doc []byte, start, end uint32) ([]byte, error) {
 }
 
 func arrayDocumentBase(doc []byte) (uint32, uint32, *Builder, error) {
-	docType, err := DetectDocType(doc)
-	if err != nil {
+	if _, err := DetectDocType(doc); err != nil {
 		return 0, 0, nil, err
-	}
-	if docType != DocTree {
-		return 0, 0, nil, fmt.Errorf("array operations require tree documents")
 	}
 	tr, err := ParseTrailer(doc)
 	if err != nil {
 		return 0, 0, nil, err
 	}
-	header, _, err := NodeSliceAt(doc, tr.RootOffset)
+	root, err := DecodeValueAt(doc, tr.RootOffset)
 	if err != nil {
 		return 0, 0, nil, err
 	}
-	if header.KeyType != KeyArr {
+	if root.Type != TypeArr {
 		return 0, 0, nil, fmt.Errorf("root is not an array")
 	}
-	if !header.IsRoot {
-		return 0, 0, nil, fmt.Errorf("array root missing root flag")
-	}
-	length, err := arrayRootLength(doc, tr.RootOffset)
+	length, err := arrayRootLength(doc, root.Offset)
 	if err != nil {
 		return 0, 0, nil, err
 	}

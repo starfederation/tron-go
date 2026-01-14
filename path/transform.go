@@ -27,7 +27,7 @@ type match struct {
 // Transform applies fn to every value matched by the expression and returns a new document.
 // Transform only operates on values that directly exist in the TRON document.
 func (e *Expr) Transform(doc []byte, fn func(tron.Value) (tron.Value, error)) ([]byte, error) {
-	rootVal, docType, _, err := rootTRONValue(doc)
+	rootVal, _, trailer, err := rootTRONValue(doc)
 	if err != nil {
 		return nil, err
 	}
@@ -43,8 +43,7 @@ func (e *Expr) Transform(doc []byte, fn func(tron.Value) (tron.Value, error)) ([
 		return doc, nil
 	}
 
-	switch docType {
-	case tron.DocScalar:
+	if rootVal.Type != tron.TypeArr && rootVal.Type != tron.TypeMap {
 		if len(matches) != 1 || len(matches[0].path) != 0 {
 			return nil, fmt.Errorf("transform expects root scalar match")
 		}
@@ -53,26 +52,23 @@ func (e *Expr) Transform(doc []byte, fn func(tron.Value) (tron.Value, error)) ([
 			return nil, err
 		}
 		return tron.EncodeScalarDocument(updated)
-	case tron.DocTree:
-		builder, trailer, err := tron.NewBuilderFromDocument(doc)
+	}
+	builder, _, err := tron.NewBuilderFromDocument(doc)
+	if err != nil {
+		return nil, err
+	}
+	root := rootVal
+	for _, m := range matches {
+		var err error
+		root, err = applyAtPath(builder, root, m.path, fn)
 		if err != nil {
 			return nil, err
 		}
-		root := rootVal
-		for _, m := range matches {
-			var err error
-			root, err = applyAtPath(builder, root, m.path, fn)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if root.Type != tron.TypeMap && root.Type != tron.TypeArr {
-			return tron.EncodeScalarDocument(root)
-		}
-		return builder.BytesWithTrailer(root.Offset, trailer.RootOffset), nil
-	default:
-		return nil, fmt.Errorf("unknown document type")
 	}
+	if root.Type != tron.TypeMap && root.Type != tron.TypeArr {
+		return tron.EncodeScalarDocument(root)
+	}
+	return builder.BytesWithTrailer(root.Offset, trailer.RootOffset), nil
 }
 
 func (i *interpreter) collectMatches(node *node, cur match) ([]match, error) {
@@ -391,34 +387,18 @@ func applyAtPath(builder *tron.Builder, root tron.Value, steps []pathStep, fn fu
 }
 
 func rootTRONValue(doc []byte) (tron.Value, tron.DocType, tron.Trailer, error) {
-	docType, err := tron.DetectDocType(doc)
+	if _, err := tron.DetectDocType(doc); err != nil {
+		return tron.Value{}, tron.DocUnknown, tron.Trailer{}, err
+	}
+	tr, err := tron.ParseTrailer(doc)
 	if err != nil {
 		return tron.Value{}, tron.DocUnknown, tron.Trailer{}, err
 	}
-	switch docType {
-	case tron.DocScalar:
-		val, err := tron.DecodeScalarDocument(doc)
-		return val, docType, tron.Trailer{}, err
-	case tron.DocTree:
-		tr, err := tron.ParseTrailer(doc)
-		if err != nil {
-			return tron.Value{}, docType, tron.Trailer{}, err
-		}
-		h, _, err := tron.NodeSliceAt(doc, tr.RootOffset)
-		if err != nil {
-			return tron.Value{}, docType, tron.Trailer{}, err
-		}
-		switch h.KeyType {
-		case tron.KeyMap:
-			return tron.Value{Type: tron.TypeMap, Offset: tr.RootOffset}, docType, tr, nil
-		case tron.KeyArr:
-			return tron.Value{Type: tron.TypeArr, Offset: tr.RootOffset}, docType, tr, nil
-		default:
-			return tron.Value{}, docType, tron.Trailer{}, fmt.Errorf("unknown root node type")
-		}
-	default:
-		return tron.Value{}, docType, tron.Trailer{}, fmt.Errorf("unknown document type")
+	root, err := tron.DecodeValueAt(doc, tr.RootOffset)
+	if err != nil {
+		return tron.Value{}, tron.DocUnknown, tron.Trailer{}, err
 	}
+	return root, tron.DocTree, tr, nil
 }
 
 func collectArrayMatches(v jValue, base []pathStep) ([]match, error) {

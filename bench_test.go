@@ -305,45 +305,34 @@ func BenchmarkTRONEncodeOnly(b *testing.B) {
 }
 
 func cloneDocument(doc []byte) ([]byte, error) {
-	docType, err := DetectDocType(doc)
+	if _, err := DetectDocType(doc); err != nil {
+		return nil, err
+	}
+	tr, err := ParseTrailer(doc)
 	if err != nil {
 		return nil, err
 	}
-	switch docType {
-	case DocScalar:
-		val, err := DecodeScalarDocument(doc)
-		if err != nil {
-			return nil, err
-		}
-		return EncodeScalarDocument(val)
-	case DocTree:
-		tr, err := ParseTrailer(doc)
-		if err != nil {
-			return nil, err
-		}
-		h, _, err := NodeSliceAt(doc, tr.RootOffset)
-		if err != nil {
-			return nil, err
-		}
+	root, err := DecodeValueAt(doc, tr.RootOffset)
+	if err != nil {
+		return nil, err
+	}
+	switch root.Type {
+	case TypeMap:
 		builder := NewBuilder()
-		switch h.KeyType {
-		case KeyMap:
-			root, err := cloneMapNode(doc, tr.RootOffset, builder)
-			if err != nil {
-				return nil, err
-			}
-			return builder.BytesWithTrailer(root, 0), nil
-		case KeyArr:
-			root, err := cloneArrayNode(doc, tr.RootOffset, builder)
-			if err != nil {
-				return nil, err
-			}
-			return builder.BytesWithTrailer(root, 0), nil
-		default:
-			return nil, fmt.Errorf("unknown root key type")
+		newRoot, err := cloneMapNode(doc, root.Offset, builder)
+		if err != nil {
+			return nil, err
 		}
+		return builder.BytesWithTrailer(newRoot, 0), nil
+	case TypeArr:
+		builder := NewBuilder()
+		newRoot, err := cloneArrayNode(doc, root.Offset, builder)
+		if err != nil {
+			return nil, err
+		}
+		return builder.BytesWithTrailer(newRoot, 0), nil
 	default:
-		return nil, fmt.Errorf("unknown document type")
+		return EncodeScalarDocument(root)
 	}
 }
 

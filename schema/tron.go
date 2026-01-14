@@ -56,37 +56,18 @@ func (tronLoader) Load(url string) (any, error) {
 }
 
 func tronDocumentToAny(doc []byte) (any, error) {
-	docType, err := tron.DetectDocType(doc)
+	if _, err := tron.DetectDocType(doc); err != nil {
+		return nil, err
+	}
+	tr, err := tron.ParseTrailer(doc)
 	if err != nil {
 		return nil, err
 	}
-	switch docType {
-	case tron.DocScalar:
-		val, err := tron.DecodeScalarDocument(doc)
-		if err != nil {
-			return nil, err
-		}
-		return tronValueToAny(doc, val)
-	case tron.DocTree:
-		tr, err := tron.ParseTrailer(doc)
-		if err != nil {
-			return nil, err
-		}
-		header, _, err := tron.NodeSliceAt(doc, tr.RootOffset)
-		if err != nil {
-			return nil, err
-		}
-		switch header.KeyType {
-		case tron.KeyMap:
-			return tronMapToAny(doc, tr.RootOffset)
-		case tron.KeyArr:
-			return tronArrayToAny(doc, tr.RootOffset)
-		default:
-			return nil, fmt.Errorf("unsupported root node type: %d", header.KeyType)
-		}
-	default:
-		return nil, fmt.Errorf("unsupported document type")
+	root, err := tron.DecodeValueAt(doc, tr.RootOffset)
+	if err != nil {
+		return nil, err
 	}
+	return tronValueToAny(doc, root)
 }
 
 func tronValueToAny(doc []byte, v tron.Value) (any, error) {

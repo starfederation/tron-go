@@ -278,49 +278,18 @@ func (i *interpreter) eval(node *node, current jValue) (jValue, error) {
 }
 
 func rootValue(doc []byte) (jValue, tron.DocType, error) {
-	docType, err := tron.DetectDocType(doc)
+	if _, err := tron.DetectDocType(doc); err != nil {
+		return nullValue(), tron.DocUnknown, err
+	}
+	tr, err := tron.ParseTrailer(doc)
 	if err != nil {
 		return nullValue(), tron.DocUnknown, err
 	}
-	switch docType {
-	case tron.DocScalar:
-		val, err := tron.DecodeScalarDocument(doc)
-		if err != nil {
-			return nullValue(), docType, err
-		}
-		return valueFromTRON(doc, val), docType, nil
-	case tron.DocTree:
-		tr, err := tron.ParseTrailer(doc)
-		if err != nil {
-			return nullValue(), docType, err
-		}
-		h, _, err := tron.NodeSliceAt(doc, tr.RootOffset)
-		if err != nil {
-			return nullValue(), docType, err
-		}
-		switch h.KeyType {
-		case tron.KeyMap:
-			return jValue{
-				kind: kindTRONMap,
-				doc:  doc,
-				off:  tr.RootOffset,
-				tv:   tron.Value{Type: tron.TypeMap, Offset: tr.RootOffset},
-				tvOK: true,
-			}, docType, nil
-		case tron.KeyArr:
-			return jValue{
-				kind: kindTRONArr,
-				doc:  doc,
-				off:  tr.RootOffset,
-				tv:   tron.Value{Type: tron.TypeArr, Offset: tr.RootOffset},
-				tvOK: true,
-			}, docType, nil
-		default:
-			return nullValue(), docType, fmt.Errorf("unknown root node type")
-		}
-	default:
-		return nullValue(), docType, fmt.Errorf("unknown document type")
+	root, err := tron.DecodeValueAt(doc, tr.RootOffset)
+	if err != nil {
+		return nullValue(), tron.DocUnknown, err
 	}
+	return valueFromTRON(doc, root), tron.DocTree, nil
 }
 
 func indexValue(current jValue, index int) (jValue, error) {

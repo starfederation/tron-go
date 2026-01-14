@@ -57,69 +57,33 @@ func ValueFromGo(builder *tron.Builder, v any) (tron.Value, error) {
 	if err != nil {
 		return tron.Value{}, err
 	}
-	docType, err := tron.DetectDocType(doc)
+	if _, err := tron.DetectDocType(doc); err != nil {
+		return tron.Value{}, err
+	}
+	tr, err := tron.ParseTrailer(doc)
 	if err != nil {
 		return tron.Value{}, err
 	}
-	switch docType {
-	case tron.DocScalar:
-		return tron.DecodeScalarDocument(doc)
-	case tron.DocTree:
-		tr, err := tron.ParseTrailer(doc)
-		if err != nil {
-			return tron.Value{}, err
-		}
-		header, _, err := tron.NodeSliceAt(doc, tr.RootOffset)
-		if err != nil {
-			return tron.Value{}, err
-		}
-		var val tron.Value
-		switch header.KeyType {
-		case tron.KeyMap:
-			val = tron.Value{Type: tron.TypeMap, Offset: tr.RootOffset}
-		case tron.KeyArr:
-			val = tron.Value{Type: tron.TypeArr, Offset: tr.RootOffset}
-		default:
-			return tron.Value{}, fmt.Errorf("unknown root node type")
-		}
-		return tron.CloneValueFromDoc(doc, val, builder)
-	default:
-		return tron.Value{}, fmt.Errorf("unknown document type")
+	root, err := tron.DecodeValueAt(doc, tr.RootOffset)
+	if err != nil {
+		return tron.Value{}, err
 	}
+	return tron.CloneValueFromDoc(doc, root, builder)
 }
 
 func documentToAny(doc []byte) (any, error) {
-	docType, err := tron.DetectDocType(doc)
+	if _, err := tron.DetectDocType(doc); err != nil {
+		return nil, err
+	}
+	tr, err := tron.ParseTrailer(doc)
 	if err != nil {
 		return nil, err
 	}
-	switch docType {
-	case tron.DocScalar:
-		val, err := tron.DecodeScalarDocument(doc)
-		if err != nil {
-			return nil, err
-		}
-		return valueToAny(doc, val)
-	case tron.DocTree:
-		tr, err := tron.ParseTrailer(doc)
-		if err != nil {
-			return nil, err
-		}
-		header, _, err := tron.NodeSliceAt(doc, tr.RootOffset)
-		if err != nil {
-			return nil, err
-		}
-		switch header.KeyType {
-		case tron.KeyMap:
-			return mapToAny(doc, tr.RootOffset)
-		case tron.KeyArr:
-			return arrayToAny(doc, tr.RootOffset)
-		default:
-			return nil, fmt.Errorf("unknown root node type")
-		}
-	default:
-		return nil, fmt.Errorf("unknown document type")
+	root, err := tron.DecodeValueAt(doc, tr.RootOffset)
+	if err != nil {
+		return nil, err
 	}
+	return valueToAny(doc, root)
 }
 
 func valueToAny(doc []byte, v tron.Value) (any, error) {

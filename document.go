@@ -15,7 +15,7 @@ const (
 	DocTree
 )
 
-// DetectDocType inspects the header to determine document validity.
+// DetectDocType validates a TRON document and returns DocTree for valid docs.
 func DetectDocType(b []byte) (DocType, error) {
 	if len(b) < len(HeaderMagic)+TrailerSize {
 		return DocUnknown, fmt.Errorf("document too short")
@@ -27,18 +27,11 @@ func DetectDocType(b []byte) (DocType, error) {
 	if err != nil {
 		return DocUnknown, err
 	}
-	h, _, err := NodeSliceAt(b, tr.RootOffset)
+	_, _, err = NodeSliceAt(b, tr.RootOffset)
 	if err != nil {
 		return DocUnknown, err
 	}
-	switch h.Type {
-	case TypeArr, TypeMap:
-		return DocTree, nil
-	case TypeNil, TypeBit, TypeI64, TypeF64, TypeTxt, TypeBin:
-		return DocScalar, nil
-	default:
-		return DocUnknown, fmt.Errorf("unknown root node type %d", h.Type)
-	}
+	return DocTree, nil
 }
 
 // DecodeScalarDocument decodes a scalar document into a value.

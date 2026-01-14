@@ -19,22 +19,18 @@ var ErrFieldNotMap = ErrTronProxyFieldNotMap
 
 // MapRoot returns the root offset for a TRON document with a map root.
 func MapRoot(doc []byte) (uint32, error) {
-	docType, err := tron.DetectDocType(doc)
-	if err != nil {
+	if _, err := tron.DetectDocType(doc); err != nil {
 		return 0, err
-	}
-	if docType != tron.DocTree {
-		return 0, ErrTronProxyNotTree
 	}
 	tr, err := tron.ParseTrailer(doc)
 	if err != nil {
 		return 0, err
 	}
-	header, _, err := tron.NodeSliceAt(doc, tr.RootOffset)
+	root, err := tron.DecodeValueAt(doc, tr.RootOffset)
 	if err != nil {
 		return 0, err
 	}
-	if header.KeyType != tron.KeyMap {
+	if root.Type != tron.TypeMap {
 		return 0, ErrTronProxyRootNotMap
 	}
 	return tr.RootOffset, nil
