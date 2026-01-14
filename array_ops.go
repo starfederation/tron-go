@@ -4,7 +4,14 @@ import "fmt"
 
 // ArrGet returns the value at index, if present.
 func ArrGet(doc []byte, rootOff uint32, index uint32) (Value, bool, error) {
-	return arrGet(doc, rootOff, index)
+	length, err := arrayRootLength(doc, rootOff)
+	if err != nil {
+		return Value{}, false, err
+	}
+	if index >= length {
+		return Value{}, false, fmt.Errorf("array index %d out of range", index)
+	}
+	return arrGet(doc, rootOff, index, true)
 }
 
 // ArrayRootLength returns the length stored on the array root node.
@@ -98,18 +105,24 @@ func arrayDocumentBase(doc []byte) (uint32, uint32, *Builder, error) {
 	if header.KeyType != KeyArr {
 		return 0, 0, nil, fmt.Errorf("root is not an array")
 	}
+	if !header.IsRoot {
+		return 0, 0, nil, fmt.Errorf("array root missing root flag")
+	}
 	length, err := arrayRootLength(doc, tr.RootOffset)
 	if err != nil {
 		return 0, 0, nil, err
 	}
-	builder := &Builder{buf: append([]byte{}, doc[:len(doc)-TrailerSize]...)}
+	builder, _, err := NewBuilderFromDocument(doc)
+	if err != nil {
+		return 0, 0, nil, err
+	}
 	return tr.RootOffset, length, builder, nil
 }
 
 func arrayDenseValues(doc []byte, rootOff uint32, length uint32) ([]Value, error) {
 	values := make([]Value, length)
 	for i := uint32(0); i < length; i++ {
-		val, ok, err := arrGet(doc, rootOff, i)
+		val, ok, err := arrGet(doc, rootOff, i, true)
 		if err != nil {
 			return nil, err
 		}
@@ -135,7 +148,7 @@ func buildArrayFromValues(builder *Builder, values []Value) (uint32, error) {
 		entries[i] = arrayEntry{index: uint32(i), value: v}
 	}
 	shift := arrayRootShift(length)
-	root, err := buildArrayNode(entries, shift, length, nil)
+	root, err := buildArrayNode(entries, shift, length, true, nil)
 	putArrayEntrySlice(entries)
 	if err != nil {
 		return 0, err
@@ -150,6 +163,9 @@ func arrayRootLength(doc []byte, rootOff uint32) (uint32, error) {
 	}
 	if h.KeyType != KeyArr {
 		return 0, fmt.Errorf("root is not array")
+	}
+	if !h.IsRoot {
+		return 0, fmt.Errorf("array root missing root flag")
 	}
 	switch h.Kind {
 	case NodeLeaf:
@@ -171,7 +187,7 @@ func arrayRootLength(doc []byte, rootOff uint32) (uint32, error) {
 	}
 }
 
-func arrGet(doc []byte, off uint32, index uint32) (Value, bool, error) {
+func arrGet(doc []byte, off uint32, index uint32, isRoot bool) (Value, bool, error) {
 	h, node, err := NodeSliceAt(doc, off)
 	if err != nil {
 		return Value{}, false, err
@@ -185,19 +201,30 @@ func arrGet(doc []byte, off uint32, index uint32) (Value, bool, error) {
 			return Value{}, false, err
 		}
 		defer releaseArrayLeafNode(&leaf)
+		if !isRoot && leaf.Header.IsRoot {
+			return Value{}, false, fmt.Errorf("array non-root leaf marked as root")
+		}
 		slot := uint8(index & 0xF)
 		if ((leaf.Bitmap >> slot) & 1) == 0 {
 			return Value{}, false, nil
 		}
 		mask := uint16((uint32(1) << slot) - 1)
 		idx := popcount16(leaf.Bitmap & mask)
-		return leaf.Values[idx], true, nil
+		addr := leaf.ValueAddrs[idx]
+		val, err := DecodeValueAt(doc, addr)
+		if err != nil {
+			return Value{}, false, err
+		}
+		return val, true, nil
 	}
 	branch, err := ParseArrayBranchNode(node)
 	if err != nil {
 		return Value{}, false, err
 	}
 	defer releaseArrayBranchNode(&branch)
+	if !isRoot && branch.Header.IsRoot {
+		return Value{}, false, fmt.Errorf("array non-root branch marked as root")
+	}
 	slot := uint8((index >> branch.Shift) & 0xF)
 	if ((branch.Bitmap >> slot) & 1) == 0 {
 		return Value{}, false, nil
@@ -205,11 +232,11 @@ func arrGet(doc []byte, off uint32, index uint32) (Value, bool, error) {
 	mask := uint16((uint32(1) << slot) - 1)
 	idx := popcount16(branch.Bitmap & mask)
 	child := branch.Children[idx]
-	return arrGet(doc, child, index)
+	return arrGet(doc, child, index, false)
 }
 
 func arrSet(builder *Builder, rootOff uint32, index uint32, value Value, length uint32) (uint32, error) {
-	rootOff, err := ensureArrayRoot(builder, rootOff, index)
+	rootOff, err := ensureArrayRoot(builder, rootOff, index, length)
 	if err != nil {
 		return 0, err
 	}
@@ -221,10 +248,13 @@ func arrSet(builder *Builder, rootOff uint32, index uint32, value Value, length 
 	return newRoot, nil
 }
 
-func ensureArrayRoot(builder *Builder, rootOff uint32, index uint32) (uint32, error) {
+func ensureArrayRoot(builder *Builder, rootOff uint32, index uint32, length uint32) (uint32, error) {
 	h, node, err := NodeSliceAt(builder.buf, rootOff)
 	if err != nil {
 		return 0, err
+	}
+	if h.KeyType != KeyArr || !h.IsRoot {
+		return 0, fmt.Errorf("array root missing root flag")
 	}
 	var shift uint8
 	switch h.Kind {
@@ -242,13 +272,17 @@ func ensureArrayRoot(builder *Builder, rootOff uint32, index uint32) (uint32, er
 	}
 	off := rootOff
 	for (index >> shift) > 0xF {
+		childOff, err := cloneArrayNodeAsChild(builder.buf, off, builder)
+		if err != nil {
+			return 0, err
+		}
 		shift += 4
 		branch := ArrayBranchNode{
-			Header:   NodeHeader{Kind: NodeBranch, KeyType: KeyArr},
+			Header:   NodeHeader{Kind: NodeBranch, KeyType: KeyArr, IsRoot: true},
 			Shift:    shift,
 			Bitmap:   1,
-			Length:   0,
-			Children: []uint32{off},
+			Length:   length,
+			Children: []uint32{childOff},
 		}
 		newOff, err := appendArrayBranchNode(builder, branch)
 		if err != nil {
@@ -273,25 +307,39 @@ func arrSetNode(doc []byte, off uint32, index uint32, value Value, builder *Buil
 			return 0, false, err
 		}
 		defer releaseArrayLeafNode(&leaf)
+		if !isRoot && leaf.Header.IsRoot {
+			return 0, false, fmt.Errorf("array non-root leaf marked as root")
+		}
 		slot := uint8(index & 0xF)
 		mask := uint16((uint32(1) << slot) - 1)
 		idx := popcount16(leaf.Bitmap & mask)
 		has := ((leaf.Bitmap >> slot) & 1) == 1
-		values := leaf.Values
 		if has {
-			if valueEqual(values[idx], value) {
+			cur, err := DecodeValueAt(doc, leaf.ValueAddrs[idx])
+			if err != nil {
+				return 0, false, err
+			}
+			if valueEqual(cur, value) {
 				if !isRoot || leaf.Length == rootLength {
 					return off, false, nil
 				}
-			} else {
-				values[idx] = value
 			}
+		}
+		newAddr, err := valueAddress(builder, value)
+		if err != nil {
+			return 0, false, err
+		}
+		values := leaf.ValueAddrs
+		var newValues []uint32
+		if has {
+			newValues = getUint32Slice(len(values))
+			copy(newValues, values)
+			newValues[idx] = newAddr
 		} else {
-			newValues := getValueSlice(len(values) + 1)
+			newValues = getUint32Slice(len(values) + 1)
 			copy(newValues, values[:idx])
-			newValues[idx] = value
+			newValues[idx] = newAddr
 			copy(newValues[idx+1:], values[idx:])
-			values = newValues
 		}
 		bitmap := leaf.Bitmap
 		if !has {
@@ -302,16 +350,14 @@ func arrSetNode(doc []byte, off uint32, index uint32, value Value, builder *Buil
 			length = rootLength
 		}
 		newLeaf := ArrayLeafNode{
-			Header: NodeHeader{Kind: NodeLeaf, KeyType: KeyArr},
+			Header: NodeHeader{Kind: NodeLeaf, KeyType: KeyArr, IsRoot: isRoot},
 			Shift:  0,
 			Bitmap: bitmap,
 			Length: length,
-			Values: values,
+			ValueAddrs: newValues,
 		}
 		newOff, err := appendArrayLeafNode(builder, newLeaf)
-		if !has {
-			putValueSlice(values)
-		}
+		putUint32Slice(newValues)
 		if err != nil {
 			return 0, false, err
 		}
@@ -323,6 +369,9 @@ func arrSetNode(doc []byte, off uint32, index uint32, value Value, builder *Buil
 		return 0, false, err
 	}
 	defer releaseArrayBranchNode(&branch)
+	if !isRoot && branch.Header.IsRoot {
+		return 0, false, fmt.Errorf("array non-root branch marked as root")
+	}
 	slot := uint8((index >> branch.Shift) & 0xF)
 	mask := uint16((uint32(1) << slot) - 1)
 	idx := popcount16(branch.Bitmap & mask)
@@ -364,7 +413,7 @@ func arrSetNode(doc []byte, off uint32, index uint32, value Value, builder *Buil
 		length = rootLength
 	}
 	newBranch := ArrayBranchNode{
-		Header:   NodeHeader{Kind: NodeBranch, KeyType: KeyArr},
+		Header:   NodeHeader{Kind: NodeBranch, KeyType: KeyArr, IsRoot: isRoot},
 		Shift:    branch.Shift,
 		Bitmap:   bitmap,
 		Length:   length,
@@ -386,12 +435,16 @@ func buildArrayPath(index uint32, shift uint8, value Value, builder *Builder) (u
 	}
 	if shift == 0 {
 		slot := uint8(index & 0xF)
+		addr, err := valueAddress(builder, value)
+		if err != nil {
+			return 0, err
+		}
 		leaf := ArrayLeafNode{
-			Header: NodeHeader{Kind: NodeLeaf, KeyType: KeyArr},
+			Header: NodeHeader{Kind: NodeLeaf, KeyType: KeyArr, IsRoot: false},
 			Shift:  0,
 			Bitmap: 1 << slot,
 			Length: 0,
-			Values: []Value{value},
+			ValueAddrs: []uint32{addr},
 		}
 		return appendArrayLeafNode(builder, leaf)
 	}
@@ -401,11 +454,56 @@ func buildArrayPath(index uint32, shift uint8, value Value, builder *Builder) (u
 	}
 	slot := uint8((index >> shift) & 0xF)
 	branch := ArrayBranchNode{
-		Header:   NodeHeader{Kind: NodeBranch, KeyType: KeyArr},
+		Header:   NodeHeader{Kind: NodeBranch, KeyType: KeyArr, IsRoot: false},
 		Shift:    shift,
 		Bitmap:   1 << slot,
 		Length:   0,
 		Children: []uint32{child},
 	}
 	return appendArrayBranchNode(builder, branch)
+}
+
+func cloneArrayNodeAsChild(doc []byte, off uint32, builder *Builder) (uint32, error) {
+	h, node, err := NodeSliceAt(doc, off)
+	if err != nil {
+		return 0, err
+	}
+	if h.KeyType != KeyArr {
+		return 0, fmt.Errorf("node is not an array")
+	}
+	if !h.IsRoot {
+		return off, nil
+	}
+	switch h.Kind {
+	case NodeLeaf:
+		leaf, err := ParseArrayLeafNode(node)
+		if err != nil {
+			return 0, err
+		}
+		defer releaseArrayLeafNode(&leaf)
+		child := ArrayLeafNode{
+			Header:     NodeHeader{Kind: NodeLeaf, KeyType: KeyArr, IsRoot: false},
+			Shift:      leaf.Shift,
+			Bitmap:     leaf.Bitmap,
+			Length:     0,
+			ValueAddrs: leaf.ValueAddrs,
+		}
+		return appendArrayLeafNode(builder, child)
+	case NodeBranch:
+		branch, err := ParseArrayBranchNode(node)
+		if err != nil {
+			return 0, err
+		}
+		defer releaseArrayBranchNode(&branch)
+		child := ArrayBranchNode{
+			Header:   NodeHeader{Kind: NodeBranch, KeyType: KeyArr, IsRoot: false},
+			Shift:    branch.Shift,
+			Bitmap:   branch.Bitmap,
+			Length:   0,
+			Children: branch.Children,
+		}
+		return appendArrayBranchNode(builder, child)
+	default:
+		return 0, fmt.Errorf("unknown array node kind")
+	}
 }

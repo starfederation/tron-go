@@ -26,6 +26,9 @@ func FuzzEncodeDecodeValue(f *testing.F) {
 			return
 		}
 		v := valueFromFuzzBytes(data)
+		if v.Type == TypeArr || v.Type == TypeMap {
+			return
+		}
 		enc, err := EncodeValue(v)
 		if err != nil {
 			t.Fatalf("encode value: %v", err)

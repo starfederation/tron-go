@@ -1,7 +1,6 @@
 package path
 
 import (
-	"encoding/binary"
 	"fmt"
 
 	tron "github.com/starfederation/tron-go"
@@ -25,47 +24,31 @@ func mapGetBytesHashed(doc []byte, off uint32, key []byte, hash uint32, depth in
 		return tron.Value{}, false, fmt.Errorf("node is not a map")
 	}
 	if h.Kind == tron.NodeLeaf {
-		p := 8
-		for i := uint32(0); i < h.EntryCount; i++ {
-			keyVal, n, err := tron.DecodeValue(node[p:])
-			if err != nil {
-				return tron.Value{}, false, fmt.Errorf("key decode failed: %w", err)
-			}
-			if keyVal.Type != tron.TypeTxt {
-				return tron.Value{}, false, fmt.Errorf("map key is not txt")
-			}
-			p += n
-			val, m, err := tron.DecodeValue(node[p:])
-			if err != nil {
-				return tron.Value{}, false, fmt.Errorf("value decode failed: %w", err)
-			}
-			p += m
-			if bytesEqual(keyVal.Bytes, key) {
-				return val, true, nil
+		leaf, err := tron.ParseMapLeafNode(doc, node)
+		if err != nil {
+			return tron.Value{}, false, err
+		}
+		defer tron.ReleaseMapLeafNode(&leaf)
+		for _, entry := range leaf.Entries {
+			if bytesEqual(entry.Key, key) {
+				return entry.Value, true, nil
 			}
 		}
 		return tron.Value{}, false, nil
 	}
 
-	if len(node) < 12 {
-		return tron.Value{}, false, fmt.Errorf("map branch node too small")
+	branch, err := tron.ParseMapBranchNode(node)
+	if err != nil {
+		return tron.Value{}, false, err
 	}
-	bitmap := binary.LittleEndian.Uint16(node[8:10])
-	reserved := binary.LittleEndian.Uint16(node[10:12])
-	if reserved != 0 {
-		return tron.Value{}, false, fmt.Errorf("map branch reserved must be 0")
-	}
+	defer tron.ReleaseMapBranchNode(&branch)
 	slot := uint8((hash >> (depth * 4)) & 0xF)
-	if ((bitmap >> slot) & 1) == 0 {
+	if ((branch.Bitmap >> slot) & 1) == 0 {
 		return tron.Value{}, false, nil
 	}
-	mask := uint16((uint32(1) << slot) - 1)
-	idx := popcount16(bitmap & mask)
-	childPos := 12 + idx*4
-	if childPos+4 > len(node) {
-		return tron.Value{}, false, fmt.Errorf("child offset truncated")
-	}
-	child := binary.LittleEndian.Uint32(node[childPos : childPos+4])
+	mask := uint32((uint32(1) << slot) - 1)
+	idx := popcount16(uint16(branch.Bitmap & mask))
+	child := branch.Children[idx]
 	return mapGetBytesHashed(doc, child, key, hash, depth+1)
 }
 
@@ -78,39 +61,24 @@ func mapIterValues(doc []byte, off uint32, fn func(tron.Value) error) error {
 		return fmt.Errorf("node is not a map")
 	}
 	if h.Kind == tron.NodeLeaf {
-		p := 8
-		for i := uint32(0); i < h.EntryCount; i++ {
-			_, n, err := tron.DecodeValue(node[p:])
-			if err != nil {
-				return fmt.Errorf("key decode failed: %w", err)
-			}
-			p += n
-			val, m, err := tron.DecodeValue(node[p:])
-			if err != nil {
-				return fmt.Errorf("value decode failed: %w", err)
-			}
-			p += m
-			if err := fn(val); err != nil {
+		leaf, err := tron.ParseMapLeafNode(doc, node)
+		if err != nil {
+			return err
+		}
+		defer tron.ReleaseMapLeafNode(&leaf)
+		for _, entry := range leaf.Entries {
+			if err := fn(entry.Value); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	if len(node) < 12 {
-		return fmt.Errorf("map branch node too small")
+	branch, err := tron.ParseMapBranchNode(node)
+	if err != nil {
+		return err
 	}
-	bitmap := binary.LittleEndian.Uint16(node[8:10])
-	reserved := binary.LittleEndian.Uint16(node[10:12])
-	if reserved != 0 {
-		return fmt.Errorf("map branch reserved must be 0")
-	}
-	count := popcount16(bitmap)
-	for i := 0; i < count; i++ {
-		childPos := 12 + i*4
-		if childPos+4 > len(node) {
-			return fmt.Errorf("child offset truncated")
-		}
-		child := binary.LittleEndian.Uint32(node[childPos : childPos+4])
+	defer tron.ReleaseMapBranchNode(&branch)
+	for _, child := range branch.Children {
 		if err := mapIterValues(doc, child, fn); err != nil {
 			return err
 		}
@@ -127,42 +95,24 @@ func mapIterEntries(doc []byte, off uint32, fn func(key []byte, val tron.Value) 
 		return fmt.Errorf("node is not a map")
 	}
 	if h.Kind == tron.NodeLeaf {
-		p := 8
-		for i := uint32(0); i < h.EntryCount; i++ {
-			keyVal, n, err := tron.DecodeValue(node[p:])
-			if err != nil {
-				return fmt.Errorf("key decode failed: %w", err)
-			}
-			if keyVal.Type != tron.TypeTxt {
-				return fmt.Errorf("map key is not txt")
-			}
-			p += n
-			val, m, err := tron.DecodeValue(node[p:])
-			if err != nil {
-				return fmt.Errorf("value decode failed: %w", err)
-			}
-			p += m
-			if err := fn(keyVal.Bytes, val); err != nil {
+		leaf, err := tron.ParseMapLeafNode(doc, node)
+		if err != nil {
+			return err
+		}
+		defer tron.ReleaseMapLeafNode(&leaf)
+		for _, entry := range leaf.Entries {
+			if err := fn(entry.Key, entry.Value); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	if len(node) < 12 {
-		return fmt.Errorf("map branch node too small")
+	branch, err := tron.ParseMapBranchNode(node)
+	if err != nil {
+		return err
 	}
-	bitmap := binary.LittleEndian.Uint16(node[8:10])
-	reserved := binary.LittleEndian.Uint16(node[10:12])
-	if reserved != 0 {
-		return fmt.Errorf("map branch reserved must be 0")
-	}
-	count := popcount16(bitmap)
-	for i := 0; i < count; i++ {
-		childPos := 12 + i*4
-		if childPos+4 > len(node) {
-			return fmt.Errorf("child offset truncated")
-		}
-		child := binary.LittleEndian.Uint32(node[childPos : childPos+4])
+	defer tron.ReleaseMapBranchNode(&branch)
+	for _, child := range branch.Children {
 		if err := mapIterEntries(doc, child, fn); err != nil {
 			return err
 		}
@@ -178,50 +128,38 @@ func arrGetRaw(doc []byte, off uint32, index uint32) (tron.Value, bool, error) {
 	if h.KeyType != tron.KeyArr {
 		return tron.Value{}, false, fmt.Errorf("node is not an array")
 	}
-	if len(node) < 16 {
-		return tron.Value{}, false, fmt.Errorf("array node too small")
-	}
-	shift := node[8]
-	reserved := node[9]
-	if reserved != 0 {
-		return tron.Value{}, false, fmt.Errorf("array reserved must be 0")
-	}
-	bitmap := binary.LittleEndian.Uint16(node[10:12])
 	if h.Kind == tron.NodeLeaf {
-		if shift != 0 {
-			return tron.Value{}, false, fmt.Errorf("array leaf shift must be 0")
+		leaf, err := tron.ParseArrayLeafNode(node)
+		if err != nil {
+			return tron.Value{}, false, err
 		}
+		defer tron.ReleaseArrayLeafNode(&leaf)
 		slot := uint8(index & 0xF)
-		if ((bitmap >> slot) & 1) == 0 {
+		if ((leaf.Bitmap >> slot) & 1) == 0 {
 			return tron.Value{}, false, nil
 		}
 		mask := uint16((uint32(1) << slot) - 1)
-		idx := popcount16(bitmap & mask)
-		p := 16
-		for i := uint32(0); i < h.EntryCount; i++ {
-			val, n, err := tron.DecodeValue(node[p:])
-			if err != nil {
-				return tron.Value{}, false, fmt.Errorf("value decode failed: %w", err)
-			}
-			if int(i) == idx {
-				return val, true, nil
-			}
-			p += n
+		idx := popcount16(leaf.Bitmap & mask)
+		addr := leaf.ValueAddrs[idx]
+		val, err := tron.DecodeValueAt(doc, addr)
+		if err != nil {
+			return tron.Value{}, false, err
 		}
-		return tron.Value{}, false, fmt.Errorf("array leaf index missing")
+		return val, true, nil
 	}
 
-	slot := uint8((index >> shift) & 0xF)
-	if ((bitmap >> slot) & 1) == 0 {
+	branch, err := tron.ParseArrayBranchNode(node)
+	if err != nil {
+		return tron.Value{}, false, err
+	}
+	defer tron.ReleaseArrayBranchNode(&branch)
+	slot := uint8((index >> branch.Shift) & 0xF)
+	if ((branch.Bitmap >> slot) & 1) == 0 {
 		return tron.Value{}, false, nil
 	}
 	mask := uint16((uint32(1) << slot) - 1)
-	idx := popcount16(bitmap & mask)
-	childPos := 16 + idx*4
-	if childPos+4 > len(node) {
-		return tron.Value{}, false, fmt.Errorf("child offset truncated")
-	}
-	child := binary.LittleEndian.Uint32(node[childPos : childPos+4])
+	idx := popcount16(branch.Bitmap & mask)
+	child := branch.Children[idx]
 	return arrGetRaw(doc, child, index)
 }
 
@@ -237,39 +175,29 @@ func arrIterValues(doc []byte, off uint32, fn func(tron.Value) error) error {
 	if h.KeyType != tron.KeyArr {
 		return fmt.Errorf("node is not an array")
 	}
-	if len(node) < 16 {
-		return fmt.Errorf("array node too small")
-	}
-	shift := node[8]
-	reserved := node[9]
-	if reserved != 0 {
-		return fmt.Errorf("array reserved must be 0")
-	}
-	bitmap := binary.LittleEndian.Uint16(node[10:12])
 	if h.Kind == tron.NodeLeaf {
-		if shift != 0 {
-			return fmt.Errorf("array leaf shift must be 0")
+		leaf, err := tron.ParseArrayLeafNode(node)
+		if err != nil {
+			return err
 		}
-		p := 16
-		for i := uint32(0); i < h.EntryCount; i++ {
-			val, n, err := tron.DecodeValue(node[p:])
+		defer tron.ReleaseArrayLeafNode(&leaf)
+		for _, addr := range leaf.ValueAddrs {
+			val, err := tron.DecodeValueAt(doc, addr)
 			if err != nil {
-				return fmt.Errorf("value decode failed: %w", err)
+				return err
 			}
-			p += n
 			if err := fn(val); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	count := popcount16(bitmap)
-	for i := 0; i < count; i++ {
-		childPos := 16 + i*4
-		if childPos+4 > len(node) {
-			return fmt.Errorf("child offset truncated")
-		}
-		child := binary.LittleEndian.Uint32(node[childPos : childPos+4])
+	branch, err := tron.ParseArrayBranchNode(node)
+	if err != nil {
+		return err
+	}
+	defer tron.ReleaseArrayBranchNode(&branch)
+	for _, child := range branch.Children {
 		if err := arrIterValues(doc, child, fn); err != nil {
 			return err
 		}
@@ -285,30 +213,24 @@ func arrCollectValues(doc []byte, off uint32, base uint32, values []tron.Value, 
 	if h.KeyType != tron.KeyArr {
 		return fmt.Errorf("node is not an array")
 	}
-	if len(node) < 16 {
-		return fmt.Errorf("array node too small")
-	}
-	shift := node[8]
-	reserved := node[9]
-	if reserved != 0 {
-		return fmt.Errorf("array reserved must be 0")
-	}
-	bitmap := binary.LittleEndian.Uint16(node[10:12])
 	if h.Kind == tron.NodeLeaf {
-		if shift != 0 {
+		leaf, err := tron.ParseArrayLeafNode(node)
+		if err != nil {
+			return err
+		}
+		defer tron.ReleaseArrayLeafNode(&leaf)
+		if leaf.Shift != 0 {
 			return fmt.Errorf("array leaf shift must be 0")
 		}
-		p := 16
 		idx := 0
 		for slot := 0; slot < 16; slot++ {
-			if ((bitmap >> uint(slot)) & 1) == 0 {
+			if ((leaf.Bitmap >> uint(slot)) & 1) == 0 {
 				continue
 			}
-			val, n, err := tron.DecodeValue(node[p:])
+			val, err := tron.DecodeValueAt(doc, leaf.ValueAddrs[idx])
 			if err != nil {
-				return fmt.Errorf("value decode failed: %w", err)
+				return err
 			}
-			p += n
 			index := base + uint32(slot)
 			if index >= uint32(len(values)) {
 				return fmt.Errorf("array index out of range: %d", index)
@@ -319,17 +241,18 @@ func arrCollectValues(doc []byte, off uint32, base uint32, values []tron.Value, 
 		}
 		return nil
 	}
+	branch, err := tron.ParseArrayBranchNode(node)
+	if err != nil {
+		return err
+	}
+	defer tron.ReleaseArrayBranchNode(&branch)
 	childIdx := 0
 	for slot := 0; slot < 16; slot++ {
-		if ((bitmap >> uint(slot)) & 1) == 0 {
+		if ((branch.Bitmap >> uint(slot)) & 1) == 0 {
 			continue
 		}
-		childPos := 16 + childIdx*4
-		if childPos+4 > len(node) {
-			return fmt.Errorf("child offset truncated")
-		}
-		child := binary.LittleEndian.Uint32(node[childPos : childPos+4])
-		childBase := base + (uint32(slot) << shift)
+		child := branch.Children[childIdx]
+		childBase := base + (uint32(slot) << branch.Shift)
 		if err := arrCollectValues(doc, child, childBase, values, present); err != nil {
 			return err
 		}

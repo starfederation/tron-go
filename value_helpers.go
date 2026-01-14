@@ -177,7 +177,7 @@ func valueMapFill(doc []byte, off uint32, out map[string]any) error {
 		return fmt.Errorf("node is not a map")
 	}
 	if h.Kind == NodeLeaf {
-		leaf, err := ParseMapLeafNode(node)
+		leaf, err := ParseMapLeafNode(doc, node)
 		if err != nil {
 			return err
 		}

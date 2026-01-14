@@ -212,37 +212,18 @@ func ToJSON(doc []byte) (string, error) {
 
 // WriteJSON appends JSON for doc to sb.
 func WriteJSON(sb *strings.Builder, doc []byte) error {
-	docType, err := DetectDocType(doc)
+	if _, err := DetectDocType(doc); err != nil {
+		return err
+	}
+	tr, err := ParseTrailer(doc)
 	if err != nil {
 		return err
 	}
-	switch docType {
-	case DocScalar:
-		val, err := DecodeScalarDocument(doc)
-		if err != nil {
-			return err
-		}
-		return writeJSONValue(sb, doc, val)
-	case DocTree:
-		tr, err := ParseTrailer(doc)
-		if err != nil {
-			return err
-		}
-		header, _, err := NodeSliceAt(doc, tr.RootOffset)
-		if err != nil {
-			return err
-		}
-		switch header.KeyType {
-		case KeyMap:
-			return writeJSONValue(sb, doc, Value{Type: TypeMap, Offset: tr.RootOffset})
-		case KeyArr:
-			return writeJSONValue(sb, doc, Value{Type: TypeArr, Offset: tr.RootOffset})
-		default:
-			return fmt.Errorf("unknown root node type")
-		}
-	default:
-		return fmt.Errorf("unsupported document type")
+	root, err := DecodeValueAt(doc, tr.RootOffset)
+	if err != nil {
+		return err
 	}
+	return writeJSONValue(sb, doc, root)
 }
 
 func writeJSONValue(sb *strings.Builder, doc []byte, v Value) error {
@@ -258,6 +239,9 @@ func writeJSONValue(sb *strings.Builder, doc []byte, v Value) error {
 	case TypeI64:
 		sb.WriteString(strconv.FormatInt(v.I64, 10))
 	case TypeF64:
+		if math.IsNaN(v.F64) || math.IsInf(v.F64, 0) {
+			return fmt.Errorf("f64 must be finite")
+		}
 		sb.WriteString(strconv.FormatFloat(v.F64, 'g', -1, 64))
 	case TypeTxt:
 		writeJSONStringBytes(sb, v.Bytes)
@@ -300,7 +284,7 @@ func writeMapNode(state *mapWriteState, doc []byte, off uint32) error {
 		return fmt.Errorf("node is not a map")
 	}
 	if h.Kind == NodeLeaf {
-		leaf, err := ParseMapLeafNode(node)
+		leaf, err := ParseMapLeafNode(doc, node)
 		if err != nil {
 			return err
 		}
@@ -336,31 +320,9 @@ func writeMapEntry(state *mapWriteState, key []byte, val Value, doc []byte) erro
 }
 
 func writeJSONArray(sb *strings.Builder, doc []byte, off uint32) error {
-	h, node, err := NodeSliceAt(doc, off)
+	length, err := arrayRootLength(doc, off)
 	if err != nil {
 		return err
-	}
-	if h.KeyType != KeyArr {
-		return fmt.Errorf("node is not an array")
-	}
-	var length uint32
-	switch h.Kind {
-	case NodeLeaf:
-		leaf, err := ParseArrayLeafNode(node)
-		if err != nil {
-			return err
-		}
-		defer releaseArrayLeafNode(&leaf)
-		length = leaf.Length
-	case NodeBranch:
-		branch, err := ParseArrayBranchNode(node)
-		if err != nil {
-			return err
-		}
-		defer releaseArrayBranchNode(&branch)
-		length = branch.Length
-	default:
-		return fmt.Errorf("unknown array node kind")
 	}
 	if length == 0 {
 		sb.WriteString("[]")
@@ -415,7 +377,11 @@ func collectArrayValues(doc []byte, off uint32, base uint32, values []Value, pre
 			if index >= uint32(len(values)) {
 				return fmt.Errorf("array index out of range: %d", index)
 			}
-			values[index] = leaf.Values[idx]
+			val, err := DecodeValueAt(doc, leaf.ValueAddrs[idx])
+			if err != nil {
+				return err
+			}
+			values[index] = val
 			present[index] = true
 			idx++
 		}

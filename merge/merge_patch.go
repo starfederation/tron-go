@@ -9,27 +9,22 @@ import (
 // ApplyMergePatch applies JSON Merge Patch semantics to a target document.
 // If the patch is not a map, the patch replaces the target.
 func ApplyMergePatch(target, patch []byte) ([]byte, error) {
-	patchType, err := tron.DetectDocType(patch)
-	if err != nil {
+	if _, err := tron.DetectDocType(patch); err != nil {
 		return nil, err
-	}
-	if patchType == tron.DocScalar {
-		return patch, nil
 	}
 	patchTrailer, err := tron.ParseTrailer(patch)
 	if err != nil {
 		return nil, err
 	}
-	patchHeader, _, err := tron.NodeSliceAt(patch, patchTrailer.RootOffset)
+	patchRoot, err := tron.DecodeValueAt(patch, patchTrailer.RootOffset)
 	if err != nil {
 		return nil, err
 	}
-	if patchHeader.KeyType != tron.KeyMap {
+	if patchRoot.Type != tron.TypeMap {
 		return patch, nil
 	}
 
-	targetType, err := tron.DetectDocType(target)
-	if err != nil {
+	if _, err := tron.DetectDocType(target); err != nil {
 		return nil, err
 	}
 
@@ -37,23 +32,21 @@ func ApplyMergePatch(target, patch []byte) ([]byte, error) {
 	var baseRoot uint32
 	var prevRoot uint32
 
-	if targetType == tron.DocTree {
-		targetTrailer, err := tron.ParseTrailer(target)
+	targetTrailer, err := tron.ParseTrailer(target)
+	if err != nil {
+		return nil, err
+	}
+	targetRoot, err := tron.DecodeValueAt(target, targetTrailer.RootOffset)
+	if err != nil {
+		return nil, err
+	}
+	if targetRoot.Type == tron.TypeMap {
+		builder, _, err = tron.NewBuilderFromDocument(target)
 		if err != nil {
 			return nil, err
 		}
-		targetHeader, _, err := tron.NodeSliceAt(target, targetTrailer.RootOffset)
-		if err != nil {
-			return nil, err
-		}
-		if targetHeader.KeyType == tron.KeyMap {
-			builder, _, err = tron.NewBuilderFromDocument(target)
-			if err != nil {
-				return nil, err
-			}
-			baseRoot = targetTrailer.RootOffset
-			prevRoot = targetTrailer.RootOffset
-		}
+		baseRoot = targetRoot.Offset
+		prevRoot = targetTrailer.RootOffset
 	}
 
 	if builder == nil {
@@ -70,7 +63,7 @@ func ApplyMergePatch(target, patch []byte) ([]byte, error) {
 		builder: builder,
 		patch:   patch,
 	}
-	root, err := applier.applyMapPatch(baseRoot, patchTrailer.RootOffset)
+	root, err := applier.applyMapPatch(baseRoot, patchRoot.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +84,7 @@ func (a *mergePatchApplier) applyMapPatch(targetOff, patchOff uint32) (uint32, e
 		return 0, fmt.Errorf("merge patch expects map nodes")
 	}
 	if header.Kind == tron.NodeLeaf {
-		leaf, err := tron.ParseMapLeafNode(node)
+		leaf, err := tron.ParseMapLeafNode(a.patch, node)
 		if err != nil {
 			return 0, err
 		}

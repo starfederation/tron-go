@@ -37,7 +37,7 @@ func cloneMapNode(doc []byte, off uint32, builder *Builder) (uint32, error) {
 		return 0, fmt.Errorf("clone expects map node")
 	}
 	if header.Kind == NodeLeaf {
-		leaf, err := ParseMapLeafNode(node)
+		leaf, err := ParseMapLeafNode(doc, node)
 		if err != nil {
 			return 0, err
 		}
@@ -94,14 +94,30 @@ func cloneArrayNode(doc []byte, off uint32, builder *Builder) (uint32, error) {
 			return 0, err
 		}
 		defer releaseArrayLeafNode(&leaf)
-		for i := range leaf.Values {
-			cloned, err := cloneValueFromDoc(doc, leaf.Values[i], builder)
+		valueAddrs := make([]uint32, len(leaf.ValueAddrs))
+		for i, addr := range leaf.ValueAddrs {
+			val, err := DecodeValueAt(doc, addr)
 			if err != nil {
 				return 0, err
 			}
-			leaf.Values[i] = cloned
+			cloned, err := cloneValueFromDoc(doc, val, builder)
+			if err != nil {
+				return 0, err
+			}
+			newAddr, err := valueAddress(builder, cloned)
+			if err != nil {
+				return 0, err
+			}
+			valueAddrs[i] = newAddr
 		}
-		newOff, err := appendArrayLeafNode(builder, leaf)
+		newLeaf := ArrayLeafNode{
+			Header:     NodeHeader{Kind: NodeLeaf, KeyType: KeyArr, IsRoot: leaf.Header.IsRoot},
+			Shift:      leaf.Shift,
+			Bitmap:     leaf.Bitmap,
+			Length:     leaf.Length,
+			ValueAddrs: valueAddrs,
+		}
+		newOff, err := appendArrayLeafNode(builder, newLeaf)
 		if err != nil {
 			return 0, err
 		}
@@ -120,7 +136,14 @@ func cloneArrayNode(doc []byte, off uint32, builder *Builder) (uint32, error) {
 		}
 		branch.Children[i] = cloneOff
 	}
-	newOff, err := appendArrayBranchNode(builder, branch)
+	newBranch := ArrayBranchNode{
+		Header:   NodeHeader{Kind: NodeBranch, KeyType: KeyArr, IsRoot: header.IsRoot},
+		Shift:    branch.Shift,
+		Bitmap:   branch.Bitmap,
+		Length:   branch.Length,
+		Children: branch.Children,
+	}
+	newOff, err := appendArrayBranchNode(builder, newBranch)
 	if err != nil {
 		return 0, err
 	}

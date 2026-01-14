@@ -15,53 +15,56 @@ const (
 	DocTree
 )
 
-// DetectDocType inspects the tail to determine document type.
+// DetectDocType inspects the header to determine document validity.
 func DetectDocType(b []byte) (DocType, error) {
-	if len(b) < len(ScalarMagic) {
+	if len(b) < len(HeaderMagic)+TrailerSize {
 		return DocUnknown, fmt.Errorf("document too short")
 	}
-	tail := b[len(b)-len(ScalarMagic):]
-	switch {
-	case bytes.Equal(tail, ScalarMagic[:]):
-		return DocScalar, nil
-	case bytes.Equal(tail, TrailerMagic[:]):
-		if len(b) < TrailerSize {
-			return DocUnknown, fmt.Errorf("tree trailer too short")
-		}
+	if !bytes.Equal(b[:len(HeaderMagic)], HeaderMagic[:]) {
+		return DocUnknown, fmt.Errorf("missing TRON header magic")
+	}
+	tr, err := ParseTrailer(b)
+	if err != nil {
+		return DocUnknown, err
+	}
+	h, _, err := NodeSliceAt(b, tr.RootOffset)
+	if err != nil {
+		return DocUnknown, err
+	}
+	switch h.Type {
+	case TypeArr, TypeMap:
 		return DocTree, nil
+	case TypeNil, TypeBit, TypeI64, TypeF64, TypeTxt, TypeBin:
+		return DocScalar, nil
 	default:
-		return DocUnknown, fmt.Errorf("unknown document trailer")
+		return DocUnknown, fmt.Errorf("unknown root node type %d", h.Type)
 	}
 }
 
 // DecodeScalarDocument decodes a scalar document into a value.
 func DecodeScalarDocument(b []byte) (Value, error) {
-	if len(b) < len(ScalarMagic) {
-		return Value{}, fmt.Errorf("document too short")
-	}
-	if !bytes.Equal(b[len(b)-len(ScalarMagic):], ScalarMagic[:]) {
-		return Value{}, fmt.Errorf("missing NORT terminator")
-	}
-	payload := b[:len(b)-len(ScalarMagic)]
-	val, n, err := DecodeValue(payload)
+	tr, err := ParseTrailer(b)
 	if err != nil {
 		return Value{}, err
 	}
-	if n != len(payload) {
-		return Value{}, fmt.Errorf("extra bytes after scalar value")
+	val, err := DecodeValueAt(b, tr.RootOffset)
+	if err != nil {
+		return Value{}, err
+	}
+	if val.Type == TypeArr || val.Type == TypeMap {
+		return Value{}, fmt.Errorf("root is not scalar")
 	}
 	return val, nil
 }
 
 // EncodeScalarDocument encodes a scalar value into a document.
 func EncodeScalarDocument(v Value) ([]byte, error) {
-	val, err := EncodeValue(v)
+	builder := NewBuilder()
+	addr, err := appendValueNode(builder, v)
 	if err != nil {
 		return nil, err
 	}
-	out := append([]byte{}, val...)
-	out = append(out, ScalarMagic[:]...)
-	return out, nil
+	return builder.BytesWithTrailer(addr, 0), nil
 }
 
 // ParseRootHeader returns the trailer and root node header.
@@ -97,7 +100,9 @@ type Builder struct {
 
 // NewBuilder creates an empty builder.
 func NewBuilder() *Builder {
-	return &Builder{buf: make([]byte, 0, 1024)}
+	buf := make([]byte, 0, 1024)
+	buf = append(buf, HeaderMagic[:]...)
+	return &Builder{buf: buf}
 }
 
 // NewBuilderWithCapacity creates an empty builder with a given capacity.
@@ -105,7 +110,12 @@ func NewBuilderWithCapacity(capacity int) *Builder {
 	if capacity <= 0 {
 		return NewBuilder()
 	}
-	return &Builder{buf: make([]byte, 0, capacity)}
+	if capacity < len(HeaderMagic) {
+		capacity = len(HeaderMagic)
+	}
+	buf := make([]byte, 0, capacity)
+	buf = append(buf, HeaderMagic[:]...)
+	return &Builder{buf: buf}
 }
 
 // NewBuilderFromDocument copies a tree document into a builder and returns its trailer.
@@ -133,6 +143,7 @@ func (b *Builder) Buffer() []byte {
 // Reset clears the builder buffer while retaining its capacity.
 func (b *Builder) Reset() {
 	b.buf = b.buf[:0]
+	b.buf = append(b.buf, HeaderMagic[:]...)
 }
 
 // BytesWithTrailer returns the document with a trailer appended.
@@ -156,6 +167,5 @@ func (b *Builder) BytesWithTrailerInPlace(rootOffset, prevRootOffset uint32) []b
 	}
 	binary.LittleEndian.PutUint32(b.buf[start:start+4], rootOffset)
 	binary.LittleEndian.PutUint32(b.buf[start+4:start+8], prevRootOffset)
-	copy(b.buf[start+8:start+12], TrailerMagic[:])
 	return b.buf
 }

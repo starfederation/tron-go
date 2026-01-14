@@ -24,7 +24,10 @@ func MergeMapDocuments(left, right []byte) ([]byte, error) {
 	if leftHeader.KeyType != KeyMap || rightHeader.KeyType != KeyMap {
 		return nil, fmt.Errorf("merge expects map roots")
 	}
-	base := &Builder{buf: append([]byte{}, left[:len(left)-TrailerSize]...)}
+	base, _, err := NewBuilderFromDocument(left)
+	if err != nil {
+		return nil, err
+	}
 	merger := mapMerger{
 		left:    left,
 		right:   right,
@@ -57,7 +60,7 @@ func (m *mapMerger) mergeNodes(leftOff, rightOff uint32, depth int) (uint32, boo
 	}
 
 	if rightHeader.Kind == NodeLeaf {
-		rightLeaf, err := ParseMapLeafNode(rightNode)
+		rightLeaf, err := ParseMapLeafNode(m.right, rightNode)
 		if err != nil {
 			return 0, false, err
 		}
@@ -86,7 +89,7 @@ func (m *mapMerger) mergeNodes(leftOff, rightOff uint32, depth int) (uint32, boo
 		if err != nil {
 			return 0, false, err
 		}
-		leftLeaf, err := ParseMapLeafNode(leftNode)
+		leftLeaf, err := ParseMapLeafNode(m.left, leftNode)
 		if err != nil {
 			return 0, false, err
 		}
@@ -121,7 +124,7 @@ func (m *mapMerger) mergeNodes(leftOff, rightOff uint32, depth int) (uint32, boo
 	defer releaseMapBranchNode(&rightBranch)
 
 	union := leftBranch.Bitmap | rightBranch.Bitmap
-	children := make([]uint32, 0, popcount16(union))
+	children := make([]uint32, 0, popcount16(uint16(union)))
 	changed := false
 	leftIdx := 0
 	rightIdx := 0

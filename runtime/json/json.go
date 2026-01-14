@@ -162,7 +162,7 @@ func mapFill(doc []byte, off uint32, out map[string]any) error {
 		return fmt.Errorf("node is not a map")
 	}
 	if h.Kind == tron.NodeLeaf {
-		leaf, err := tron.ParseMapLeafNode(node)
+		leaf, err := tron.ParseMapLeafNode(doc, node)
 		if err != nil {
 			return err
 		}

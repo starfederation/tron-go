@@ -470,7 +470,7 @@ func isFalse(v jValue) bool {
 }
 
 func mapIsEmpty(doc []byte, off uint32) bool {
-	h, _, err := tron.NodeSliceAt(doc, off)
+	h, node, err := tron.NodeSliceAt(doc, off)
 	if err != nil {
 		return false
 	}
@@ -478,10 +478,20 @@ func mapIsEmpty(doc []byte, off uint32) bool {
 		return false
 	}
 	if h.Kind == tron.NodeLeaf {
-		return h.EntryCount == 0
+		leaf, err := tron.ParseMapLeafNode(doc, node)
+		if err != nil {
+			return false
+		}
+		defer tron.ReleaseMapLeafNode(&leaf)
+		return len(leaf.Entries) == 0
 	}
 	if h.Kind == tron.NodeBranch {
-		return h.EntryCount == 0
+		branch, err := tron.ParseMapBranchNode(node)
+		if err != nil {
+			return false
+		}
+		defer tron.ReleaseMapBranchNode(&branch)
+		return branch.Bitmap == 0 || len(branch.Children) == 0
 	}
 	return false
 }

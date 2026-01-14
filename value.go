@@ -18,7 +18,7 @@ type Value struct {
 	Offset uint32
 }
 
-// DecodeValue decodes a value record from b and returns the value and bytes read.
+// DecodeValue decodes a scalar node from b and returns the value and bytes read.
 func DecodeValue(b []byte) (Value, int, error) {
 	if len(b) < 1 {
 		return Value{}, 0, fmt.Errorf("value tag missing")
@@ -28,15 +28,15 @@ func DecodeValue(b []byte) (Value, int, error) {
 
 	switch typ {
 	case TypeNil:
-		if LowBits(tag) != 0 {
+		if tag != TagNil {
 			return Value{}, 0, fmt.Errorf("nil tag has non-zero low bits")
 		}
 		return Value{Type: TypeNil}, 1, nil
 	case TypeBit:
-		if (tag & 0x1E) != 0 {
+		if (tag & 0xF6) != 0 {
 			return Value{}, 0, fmt.Errorf("bit tag has invalid low bits")
 		}
-		return Value{Type: TypeBit, Bool: (tag & 0x01) == 1}, 1, nil
+		return Value{Type: TypeBit, Bool: (tag & 0x08) != 0}, 1, nil
 	case TypeI64:
 		v, n, err := DecodeI64Value(b)
 		if err != nil {
@@ -49,7 +49,7 @@ func DecodeValue(b []byte) (Value, int, error) {
 			return Value{}, 0, err
 		}
 		return Value{Type: TypeF64, F64: v}, n, nil
-	case TypeTxt, TypeBin, TypeArr, TypeMap:
+	case TypeTxt, TypeBin:
 		length, n, err := decodeLength(tag, b[1:])
 		if err != nil {
 			return Value{}, 0, err
@@ -59,22 +59,29 @@ func DecodeValue(b []byte) (Value, int, error) {
 		}
 		payload := b[1+n : 1+n+int(length)]
 
-		switch typ {
-		case TypeTxt, TypeBin:
-			return Value{Type: typ, Bytes: payload}, 1 + n + int(length), nil
-		case TypeArr, TypeMap:
-			if length == 0 || length > 4 {
-				return Value{}, 0, fmt.Errorf("node offset length out of range: %d", length)
-			}
-			var off uint32
-			for i := uint64(0); i < length; i++ {
-				off |= uint32(payload[i]) << (8 * i)
-			}
-			return Value{Type: typ, Offset: off}, 1 + n + int(length), nil
-		}
+		return Value{Type: typ, Bytes: payload}, 1 + n + int(length), nil
+	case TypeArr, TypeMap:
+		return Value{}, 0, fmt.Errorf("arr/map nodes must be decoded by address")
 	}
 
 	return Value{}, 0, fmt.Errorf("unknown value type %d", typ)
+}
+
+// DecodeValueAt decodes a value node at an absolute address in doc.
+func DecodeValueAt(doc []byte, addr uint32) (Value, error) {
+	if int(addr) < 0 || int(addr) >= len(doc) {
+		return Value{}, fmt.Errorf("value address out of range: %d", addr)
+	}
+	tag := doc[addr]
+	switch TypeFromTag(tag) {
+	case TypeArr:
+		return Value{Type: TypeArr, Offset: addr}, nil
+	case TypeMap:
+		return Value{Type: TypeMap, Offset: addr}, nil
+	default:
+		val, _, err := DecodeValue(doc[addr:])
+		return val, err
+	}
 }
 
 // DecodeI64Value decodes an i64 value record without copying payload bytes.
@@ -86,8 +93,8 @@ func DecodeI64Value(b []byte) (int64, int, error) {
 	if TypeFromTag(tag) != TypeI64 {
 		return 0, 0, fmt.Errorf("value is not i64")
 	}
-	if LowBits(tag) != 0 {
-		return 0, 0, fmt.Errorf("i64 tag has non-zero low bits")
+	if (tag & 0xF8) != 0 {
+		return 0, 0, fmt.Errorf("i64 tag has non-zero high bits")
 	}
 	if len(b) < 1+8 {
 		return 0, 0, fmt.Errorf("i64 payload too short")
@@ -105,8 +112,8 @@ func DecodeF64Value(b []byte) (float64, int, error) {
 	if TypeFromTag(tag) != TypeF64 {
 		return 0, 0, fmt.Errorf("value is not f64")
 	}
-	if LowBits(tag) != 0 {
-		return 0, 0, fmt.Errorf("f64 tag has non-zero low bits")
+	if (tag & 0xF8) != 0 {
+		return 0, 0, fmt.Errorf("f64 tag has non-zero high bits")
 	}
 	if len(b) < 1+8 {
 		return 0, 0, fmt.Errorf("f64 payload too short")
@@ -139,26 +146,13 @@ func encodeBytesValue(typ ValueType, payload []byte) ([]byte, error) {
 	return out, nil
 }
 
-func encodeOffsetValue(typ ValueType, offset uint32) ([]byte, error) {
-	if typ != TypeArr && typ != TypeMap {
-		return nil, fmt.Errorf("invalid type for offset value: %d", typ)
-	}
-	buf := bytebufferpool.Get()
-	defer bytebufferpool.Put(buf)
-	if err := encodeOffsetToBuffer(buf, typ, offset); err != nil {
-		return nil, err
-	}
-	out := append([]byte{}, buf.Bytes()...)
-	return out, nil
-}
-
 // decodeLength reads the length encoding for txt/bin/arr/map.
 // It returns the payload length and number of length bytes read.
 func decodeLength(tag byte, b []byte) (uint64, int, error) {
-	if (tag & 0x10) != 0 {
-		return uint64(tag & 0x0F), 0, nil
+	if (tag & 0x08) != 0 {
+		return uint64(tag>>4) & 0x0F, 0, nil
 	}
-	n := int(tag & 0x0F)
+	n := int(tag>>4) & 0x0F
 	if n < 1 || n > 8 {
 		return 0, 0, fmt.Errorf("invalid length-of-length: %d", n)
 	}
@@ -170,29 +164,6 @@ func decodeLength(tag byte, b []byte) (uint64, int, error) {
 		length |= uint64(b[i]) << (8 * i)
 	}
 	return length, n, nil
-}
-
-// encodeLength encodes a payload length for txt/bin/arr/map and returns tag and length bytes.
-func encodeLength(prefix byte, length int) (byte, []byte, error) {
-	if length < 0 {
-		return 0, nil, fmt.Errorf("negative length")
-	}
-	if length <= 15 {
-		return prefix | 0x10 | byte(length), nil, nil
-	}
-	// minimal N such that length fits
-	n := 1
-	for max := 0xFF; length > max && n < 8; n++ {
-		max = (max << 8) | 0xFF
-	}
-	if n > 8 {
-		return 0, nil, fmt.Errorf("length too large")
-	}
-	lenBytes := make([]byte, n)
-	for i := 0; i < n; i++ {
-		lenBytes[i] = byte(length >> (8 * i))
-	}
-	return prefix | byte(n&0x0F), lenBytes, nil
 }
 
 func encodeValueToBuffer(buf *bytebufferpool.ByteBuffer, v Value) error {
@@ -222,14 +193,14 @@ func encodeValueToBuffer(buf *bytebufferpool.ByteBuffer, v Value) error {
 	case TypeTxt, TypeBin:
 		return encodeBytesToBuffer(buf, v.Type, v.Bytes)
 	case TypeArr, TypeMap:
-		return encodeOffsetToBuffer(buf, v.Type, v.Offset)
+		return fmt.Errorf("arr/map nodes must be encoded as nodes")
 	default:
 		return fmt.Errorf("unknown value type %d", v.Type)
 	}
 }
 
 func encodeTextStringToBuffer(buf *bytebufferpool.ByteBuffer, s string) error {
-	if err := writeLength(buf, byte(TypeTxt)<<5, len(s)); err != nil {
+	if err := writeLength(buf, TypeTxt, len(s)); err != nil {
 		return err
 	}
 	buf.WriteString(s)
@@ -240,42 +211,20 @@ func encodeBytesToBuffer(buf *bytebufferpool.ByteBuffer, typ ValueType, payload 
 	if typ != TypeTxt && typ != TypeBin {
 		return fmt.Errorf("invalid type for bytes value: %d", typ)
 	}
-	if err := writeLength(buf, byte(typ)<<5, len(payload)); err != nil {
+	if err := writeLength(buf, typ, len(payload)); err != nil {
 		return err
 	}
 	buf.Write(payload)
 	return nil
 }
 
-func encodeOffsetToBuffer(buf *bytebufferpool.ByteBuffer, typ ValueType, offset uint32) error {
-	if typ != TypeArr && typ != TypeMap {
-		return fmt.Errorf("invalid type for offset value: %d", typ)
-	}
-	length := 1
-	if offset > 0xFF {
-		length = 2
-	}
-	if offset > 0xFFFF {
-		length = 3
-	}
-	if offset > 0xFFFFFF {
-		length = 4
-	}
-	if err := writeLength(buf, byte(typ)<<5, length); err != nil {
-		return err
-	}
-	var tmp [4]byte
-	binary.LittleEndian.PutUint32(tmp[:], offset)
-	buf.Write(tmp[:length])
-	return nil
-}
-
-func writeLength(buf *bytebufferpool.ByteBuffer, prefix byte, length int) error {
+func writeLength(buf *bytebufferpool.ByteBuffer, typ ValueType, length int) error {
 	if length < 0 {
 		return fmt.Errorf("negative length")
 	}
 	if length <= 15 {
-		buf.WriteByte(prefix | 0x10 | byte(length))
+		tag := byte(typ) | 0x08 | byte(length<<4)
+		buf.WriteByte(tag)
 		return nil
 	}
 	n := 1
@@ -285,7 +234,8 @@ func writeLength(buf *bytebufferpool.ByteBuffer, prefix byte, length int) error 
 	if n > 8 {
 		return fmt.Errorf("length too large")
 	}
-	buf.WriteByte(prefix | byte(n&0x0F))
+	tag := byte(typ) | byte(n<<4)
+	buf.WriteByte(tag)
 	var tmp [8]byte
 	for i := 0; i < n; i++ {
 		tmp[i] = byte(length >> (8 * i))

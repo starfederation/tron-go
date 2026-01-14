@@ -21,5 +21,6 @@ format backed by HAMT maps and vector tries for copy-on-write updates.
 - 🔁 JSON interop (`FromJSON`, `ToJSON`, `WriteJSON`) with `b64:` binary mapping.
 - 🧬 Clone helpers for map/array subtrees and values between documents.
 - 🧭 JMESPath-style search/compile/transform for TRON docs (`path/`).
+- 🧩 JSON Patch (RFC 6902) for TRON docs (`patch/`).
 - 🧩 JSON Merge Patch (RFC 7386) for TRON docs (`merge/`).
 - 🛡️ JSON Schema draft 2020-12 validation for TRON docs (`schema/`), with in-document refs and `AddResourceTRON`.

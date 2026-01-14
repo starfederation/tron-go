@@ -19,7 +19,7 @@ func mapGetHashed(doc []byte, off uint32, key []byte, hash uint32, depth int) (V
 		return Value{}, false, fmt.Errorf("node is not a map")
 	}
 	if h.Kind == NodeLeaf {
-		leaf, err := ParseMapLeafNode(node)
+		leaf, err := ParseMapLeafNode(doc, node)
 		if err != nil {
 			return Value{}, false, err
 		}
@@ -41,8 +41,8 @@ func mapGetHashed(doc []byte, off uint32, key []byte, hash uint32, depth int) (V
 	if ((branch.Bitmap >> slot) & 1) == 0 {
 		return Value{}, false, nil
 	}
-	mask := uint16((uint32(1) << slot) - 1)
-	idx := popcount16(branch.Bitmap & mask)
+	mask := uint32((uint32(1) << slot) - 1)
+	idx := popcount16(uint16(branch.Bitmap & mask))
 	child := branch.Children[idx]
 	return mapGetHashed(doc, child, key, hash, depth+1)
 }
@@ -115,7 +115,7 @@ func mapSetHashed(doc []byte, off uint32, key []byte, val Value, hash uint32, de
 		return 0, false, fmt.Errorf("node is not a map")
 	}
 	if h.Kind == NodeLeaf {
-		leaf, err := ParseMapLeafNode(node)
+		leaf, err := ParseMapLeafNode(doc, node)
 		if err != nil {
 			return 0, false, err
 		}
@@ -154,8 +154,8 @@ func mapSetHashed(doc []byte, off uint32, key []byte, val Value, hash uint32, de
 	}
 	defer releaseMapBranchNode(&branch)
 	slot := uint8((hash >> (depth * 4)) & hamtMask)
-	mask := uint16((uint32(1) << slot) - 1)
-	idx := popcount16(branch.Bitmap & mask)
+	mask := uint32((uint32(1) << slot) - 1)
+	idx := popcount16(uint16(branch.Bitmap & mask))
 	hasChild := ((branch.Bitmap >> slot) & 1) == 1
 
 	if hasChild {
@@ -186,7 +186,7 @@ func mapSetHashed(doc []byte, off uint32, key []byte, val Value, hash uint32, de
 	if err != nil {
 		return 0, false, err
 	}
-	newBitmap := branch.Bitmap | (1 << slot)
+	newBitmap := branch.Bitmap | (uint32(1) << slot)
 	children := getUint32Slice(len(branch.Children) + 1)
 	copy(children, branch.Children[:idx])
 	children[idx] = newChild
@@ -216,7 +216,7 @@ func mapDelete(doc []byte, off uint32, key []byte, depth int, builder *Builder) 
 		return 0, false, fmt.Errorf("node is not a map")
 	}
 	if h.Kind == NodeLeaf {
-		leaf, err := ParseMapLeafNode(node)
+		leaf, err := ParseMapLeafNode(doc, node)
 		if err != nil {
 			return 0, false, err
 		}
@@ -254,8 +254,8 @@ func mapDelete(doc []byte, off uint32, key []byte, depth int, builder *Builder) 
 	}
 	defer releaseMapBranchNode(&branch)
 	slot := uint8((XXH32(key, 0) >> (depth * 4)) & hamtMask)
-	mask := uint16((uint32(1) << slot) - 1)
-	idx := popcount16(branch.Bitmap & mask)
+	mask := uint32((uint32(1) << slot) - 1)
+	idx := popcount16(uint16(branch.Bitmap & mask))
 	hasChild := ((branch.Bitmap >> slot) & 1) == 1
 	if !hasChild {
 		return off, false, nil
@@ -273,7 +273,7 @@ func mapDelete(doc []byte, off uint32, key []byte, depth int, builder *Builder) 
 		return 0, false, err
 	}
 	if emptyChild {
-		newBitmap := branch.Bitmap &^ (1 << slot)
+		newBitmap := branch.Bitmap &^ (uint32(1) << slot)
 		children := getUint32Slice(len(branch.Children) - 1)
 		copy(children, branch.Children[:idx])
 		copy(children[idx:], branch.Children[idx+1:])
@@ -345,7 +345,7 @@ func mapNodeEmpty(doc []byte, off uint32) (bool, error) {
 	if h.Kind != NodeLeaf {
 		return false, nil
 	}
-	leaf, err := ParseMapLeafNode(node)
+	leaf, err := ParseMapLeafNode(doc, node)
 	if err != nil {
 		return false, err
 	}

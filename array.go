@@ -1,9 +1,6 @@
 package tron
 
-import (
-	"encoding/binary"
-	"fmt"
-)
+import "fmt"
 
 // ArrayBuilder builds a vector trie array from contiguous values.
 type ArrayBuilder struct {
@@ -37,7 +34,7 @@ func (b *ArrayBuilder) Set(index int, v Value) error {
 	return nil
 }
 
-// Build encodes the array into nodes and returns the root offset.
+// Build encodes the array into nodes and returns the root address.
 func (b *ArrayBuilder) Build(builder *Builder) (uint32, error) {
 	if builder == nil {
 		return 0, fmt.Errorf("nil builder")
@@ -51,7 +48,7 @@ func (b *ArrayBuilder) Build(builder *Builder) (uint32, error) {
 		entries[i] = arrayEntry{index: uint32(i), value: v}
 	}
 	shift := arrayRootShift(length)
-	root, err := buildArrayNode(entries, shift, length, b.workspace)
+	root, err := buildArrayNode(entries, shift, length, true, b.workspace)
 	putArrayEntrySliceWithWorkspace(entries, b.workspace)
 	if err != nil {
 		return 0, err
@@ -69,9 +66,9 @@ type arrayNode struct {
 	shift        uint8
 	bitmap       uint16
 	length       uint32
+	isRoot       bool
 	children     []*arrayNode
 	values       []Value
-	bodyLen      int
 	ownsChildren bool
 	ownsValues   bool
 }
@@ -88,7 +85,7 @@ func arrayRootShift(length uint32) uint8 {
 	return shift
 }
 
-func buildArrayNode(entries []arrayEntry, shift uint8, length uint32, workspace *encodeWorkspace) (*arrayNode, error) {
+func buildArrayNode(entries []arrayEntry, shift uint8, length uint32, isRoot bool, workspace *encodeWorkspace) (*arrayNode, error) {
 	if shift%4 != 0 {
 		return nil, fmt.Errorf("array node shift must be multiple of 4")
 	}
@@ -97,9 +94,13 @@ func buildArrayNode(entries []arrayEntry, shift uint8, length uint32, workspace 
 		node.kind = NodeLeaf
 		node.shift = 0
 		node.bitmap = 0
-		node.length = length
+		if isRoot {
+			node.length = length
+		} else {
+			node.length = 0
+		}
+		node.isRoot = isRoot
 		node.values = nil
-		node.bodyLen = 8
 		node.ownsValues = false
 		return node, nil
 	}
@@ -118,22 +119,24 @@ func buildArrayNode(entries []arrayEntry, shift uint8, length uint32, workspace 
 		count := popcount16(bitmap)
 		values := getValueSliceWithWorkspace(count, workspace)
 		idx := 0
-		bodyLen := 8
 		for slot := 0; slot < 16; slot++ {
 			if ((bitmap >> uint16(slot)) & 1) == 0 {
 				continue
 			}
 			values[idx] = slotValues[slot]
-			bodyLen += encodedValueLenNoErr(values[idx])
 			idx++
 		}
 		node := getArrayNodeWithWorkspace(workspace)
 		node.kind = NodeLeaf
 		node.shift = 0
 		node.bitmap = bitmap
-		node.length = length
+		if isRoot {
+			node.length = length
+		} else {
+			node.length = 0
+		}
+		node.isRoot = isRoot
 		node.values = values
-		node.bodyLen = bodyLen
 		node.ownsValues = true
 		return node, nil
 	}
@@ -165,7 +168,7 @@ func buildArrayNode(entries []arrayEntry, shift uint8, length uint32, workspace 
 		}
 		if i == len(entries) || slot != prevSlot {
 			group := entries[start:i]
-			child, err := buildArrayNode(group, shift-4, 0, workspace)
+			child, err := buildArrayNode(group, shift-4, 0, false, workspace)
 			if err != nil {
 				putArrayNodeSliceWithWorkspace(children, workspace)
 				return nil, err
@@ -181,7 +184,12 @@ func buildArrayNode(entries []arrayEntry, shift uint8, length uint32, workspace 
 	node.kind = NodeBranch
 	node.shift = shift
 	node.bitmap = bitmap
-	node.length = length
+	if isRoot {
+		node.length = length
+	} else {
+		node.length = 0
+	}
+	node.isRoot = isRoot
 	node.children = children
 	node.ownsChildren = true
 	return node, nil
@@ -189,10 +197,29 @@ func buildArrayNode(entries []arrayEntry, shift uint8, length uint32, workspace 
 
 func encodeArrayNode(builder *Builder, node *arrayNode, workspace *encodeWorkspace) (uint32, error) {
 	if node.kind == NodeLeaf {
-		off, err := appendArrayLeafNodeWithLen(builder, node)
+		valueAddrs := getUint32SliceWithWorkspace(len(node.values), workspace)
+		for i, v := range node.values {
+			addr, err := valueAddress(builder, v)
+			if err != nil {
+				putUint32SliceWithWorkspace(valueAddrs, workspace)
+				releaseArrayNode(node, workspace)
+				return 0, err
+			}
+			valueAddrs[i] = addr
+		}
+		leaf := ArrayLeafNode{
+			Header:     NodeHeader{Kind: NodeLeaf, KeyType: KeyArr, IsRoot: node.isRoot},
+			Shift:      node.shift,
+			Bitmap:     node.bitmap,
+			Length:     node.length,
+			ValueAddrs: valueAddrs,
+		}
+		off, err := appendArrayLeafNode(builder, leaf)
+		putUint32SliceWithWorkspace(valueAddrs, workspace)
 		releaseArrayNode(node, workspace)
 		return off, err
 	}
+
 	childrenOffsets := getUint32SliceWithWorkspace(len(node.children), workspace)
 	for i, child := range node.children {
 		off, err := encodeArrayNode(builder, child, workspace)
@@ -204,7 +231,7 @@ func encodeArrayNode(builder *Builder, node *arrayNode, workspace *encodeWorkspa
 		childrenOffsets[i] = off
 	}
 	branch := ArrayBranchNode{
-		Header:   NodeHeader{Kind: NodeBranch, KeyType: KeyArr},
+		Header:   NodeHeader{Kind: NodeBranch, KeyType: KeyArr, IsRoot: node.isRoot},
 		Shift:    node.shift,
 		Bitmap:   node.bitmap,
 		Length:   node.length,
@@ -214,27 +241,6 @@ func encodeArrayNode(builder *Builder, node *arrayNode, workspace *encodeWorkspa
 	putUint32SliceWithWorkspace(childrenOffsets, workspace)
 	releaseArrayNode(node, workspace)
 	return off, err
-}
-
-func appendArrayLeafNodeWithLen(builder *Builder, node *arrayNode) (uint32, error) {
-	bodyLen := node.bodyLen
-	if bodyLen < 8 {
-		bodyLen = 8
-	}
-	body, off := appendNodeWithBodyLen(builder, NodeLeaf, KeyArr, uint32(len(node.values)), bodyLen)
-	body[0] = node.shift
-	body[1] = 0
-	binary.LittleEndian.PutUint16(body[2:4], node.bitmap)
-	binary.LittleEndian.PutUint32(body[4:8], node.length)
-	p := 8
-	for _, v := range node.values {
-		n, err := writeValue(body[p:], v)
-		if err != nil {
-			return 0, err
-		}
-		p += n
-	}
-	return off, nil
 }
 
 func releaseArrayNode(node *arrayNode, workspace *encodeWorkspace) {

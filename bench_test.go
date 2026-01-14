@@ -16,12 +16,12 @@ import (
 )
 
 var (
-	benchSampleJSON   []byte
-	benchSampleCBOR   []byte
-	benchSampleTRON   []byte
-	benchSampleAny    any
+	benchSampleJSON    []byte
+	benchSampleCBOR    []byte
+	benchSampleTRON    []byte
+	benchSampleAny     any
 	benchSampleAnyTRON any
-	benchCBORDec      cbor.DecMode
+	benchCBORDec       cbor.DecMode
 
 	keyFeatures    = []byte("features")
 	keyGeometry    = []byte("geometry")
@@ -101,7 +101,7 @@ func BenchmarkTRONDecodeRead(b *testing.B) {
 		if err != nil || !ok {
 			b.Fatalf("missing features: %v", err)
 		}
-		feature0, ok, err := arrGet(benchSampleTRON, features.Offset, 0)
+		feature0, ok, err := arrGet(benchSampleTRON, features.Offset, 0, true)
 		if err != nil || !ok {
 			b.Fatalf("missing feature0: %v", err)
 		}
@@ -113,7 +113,7 @@ func BenchmarkTRONDecodeRead(b *testing.B) {
 		if err != nil || !ok {
 			b.Fatalf("missing coordinates: %v", err)
 		}
-		first, ok, err := arrGet(benchSampleTRON, coords.Offset, 0)
+		first, ok, err := arrGet(benchSampleTRON, coords.Offset, 0, true)
 		if err != nil || !ok {
 			b.Fatalf("missing coordinate[0]: %v", err)
 		}
@@ -356,7 +356,7 @@ func tronUpdateElevation(doc []byte, elevation int64) ([]byte, error) {
 	if err != nil || !ok || features.Type != TypeArr {
 		return nil, fmt.Errorf("missing features array")
 	}
-	feature0, ok, err := arrGet(doc, features.Offset, 0)
+	feature0, ok, err := arrGet(doc, features.Offset, 0, true)
 	if err != nil || !ok || feature0.Type != TypeMap {
 		return nil, fmt.Errorf("missing feature0 map")
 	}
@@ -563,11 +563,11 @@ func valueFromAny(v any, builder *Builder, cache *stringCache, workspace *encode
 	case []any:
 		if len(val) == 0 {
 			leaf := ArrayLeafNode{
-				Header: NodeHeader{Kind: NodeLeaf, KeyType: KeyArr},
+				Header: NodeHeader{Kind: NodeLeaf, KeyType: KeyArr, IsRoot: true},
 				Shift:  0,
 				Bitmap: 0,
 				Length: 0,
-				Values: nil,
+				ValueAddrs: nil,
 			}
 			off, err := appendArrayLeafNode(builder, leaf)
 			if err != nil {
@@ -586,7 +586,7 @@ func valueFromAny(v any, builder *Builder, cache *stringCache, workspace *encode
 		}
 		length := uint32(len(val))
 		shift := arrayRootShift(length)
-		root, err := buildArrayNode(entries, shift, length, workspace)
+		root, err := buildArrayNode(entries, shift, length, true, workspace)
 		putArrayEntrySliceWithWorkspace(entries, workspace)
 		if err != nil {
 			return Value{}, err

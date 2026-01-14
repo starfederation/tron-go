@@ -46,7 +46,7 @@ func (b *MapBuilder) SetString(key string, v Value) {
 	b.Set([]byte(key), v)
 }
 
-// Build encodes the map into nodes and returns the root offset.
+// Build encodes the map into nodes and returns the root address.
 func (b *MapBuilder) Build(builder *Builder) (uint32, error) {
 	if builder == nil {
 		return 0, fmt.Errorf("nil builder")
@@ -66,7 +66,6 @@ type mapNode struct {
 	bitmap       uint16
 	children     []*mapNode
 	entries      []mapEntry
-	bodyLen      int
 	ownsChildren bool
 	ownsEntries  bool
 }
@@ -96,23 +95,16 @@ func buildMapNode(entries []mapEntry, depth int, owned bool, workspace *encodeWo
 		node.kind = NodeLeaf
 		node.entries = nil
 		node.ownsEntries = false
-		node.bodyLen = 0
 		return node
 	}
 	if len(entries) == 1 {
-		bodyLen := encodedBytesLenNoErr(len(entries[0].Key)) + encodedValueLenNoErr(entries[0].Value)
 		node := getMapNodeWithWorkspace(workspace)
 		node.kind = NodeLeaf
 		node.entries = entries
 		node.ownsEntries = owned
-		node.bodyLen = bodyLen
 		return node
 	}
 	if depth >= maxDepth32 {
-		bodyLen := 0
-		for _, entry := range entries {
-			bodyLen += encodedBytesLenNoErr(len(entry.Key)) + encodedValueLenNoErr(entry.Value)
-		}
 		sort.Slice(entries, func(i, j int) bool {
 			return bytes.Compare(entries[i].Key, entries[j].Key) < 0
 		})
@@ -120,7 +112,6 @@ func buildMapNode(entries []mapEntry, depth int, owned bool, workspace *encodeWo
 		node.kind = NodeLeaf
 		node.entries = entries
 		node.ownsEntries = owned
-		node.bodyLen = bodyLen
 		return node
 	}
 
@@ -199,7 +190,12 @@ func buildMapNode(entries []mapEntry, depth int, owned bool, workspace *encodeWo
 
 func encodeMapNode(builder *Builder, node *mapNode, workspace *encodeWorkspace) (uint32, error) {
 	if node.kind == NodeLeaf {
-		off, err := appendMapLeafNodeSortedEntriesWithLen(builder, node.entries, node.bodyLen)
+		entries := getEntrySlice(len(node.entries))
+		for i, entry := range node.entries {
+			entries[i] = MapLeafEntry{Key: entry.Key, Value: entry.Value}
+		}
+		off, err := appendMapLeafNodeSorted(builder, entries)
+		putEntrySlice(entries)
 		releaseMapNode(node, workspace)
 		return off, err
 	}
@@ -215,7 +211,7 @@ func encodeMapNode(builder *Builder, node *mapNode, workspace *encodeWorkspace) 
 	}
 	branch := MapBranchNode{
 		Header:   NodeHeader{Kind: NodeBranch, KeyType: KeyMap},
-		Bitmap:   node.bitmap,
+		Bitmap:   uint32(node.bitmap),
 		Children: childrenOffsets,
 	}
 	off, err := appendMapBranchNode(builder, branch)

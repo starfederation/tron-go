@@ -16,23 +16,18 @@ const (
 
 const (
 	TagNil      byte = 0x00 // 00000000
-	TagBitFalse byte = 0x20 // 00100000
-	TagBitTrue  byte = 0x21 // 00100001
-	TagI64      byte = 0x40 // 01000000
-	TagF64      byte = 0x60 // 01100000
+	TagBitFalse byte = 0x01 // 00000001
+	TagBitTrue  byte = 0x09 // 00001001 (bit set in bit3)
+	TagI64      byte = 0x02 // 00000010
+	TagF64      byte = 0x03 // 00000011
 )
 
-// TypeFromTag returns the ValueType encoded in the top 3 bits.
+// TypeFromTag returns the ValueType encoded in the low 3 bits.
 func TypeFromTag(tag byte) ValueType {
-	return ValueType(tag >> 5)
-}
-
-// LowBits returns the low 5 bits of the tag.
-func LowBits(tag byte) byte {
-	return tag & 0x1F
+	return ValueType(tag & 0x07)
 }
 
 // IsPacked reports whether the tag uses inline packing (txt/bin/arr/map).
 func IsPacked(tag byte) bool {
-	return (tag & 0x10) != 0
+	return (tag & 0x08) != 0
 }

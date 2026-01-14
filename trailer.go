@@ -6,13 +6,10 @@ import (
 	"fmt"
 )
 
-// TrailerMagic is the 4-byte terminator for tree documents.
-var TrailerMagic = [4]byte{'T', 'R', 'O', 'N'}
+// HeaderMagic is the 4-byte header for TRON documents.
+var HeaderMagic = [4]byte{'T', 'R', 'O', 'N'}
 
-// ScalarMagic is the 4-byte terminator for scalar documents.
-var ScalarMagic = [4]byte{'N', 'O', 'R', 'T'}
-
-const TrailerSize = 12
+const TrailerSize = 8
 
 // Trailer describes the root record trailer at the end of a tree document.
 type Trailer struct {
@@ -20,13 +17,13 @@ type Trailer struct {
 	PrevRootOffset uint32
 }
 
-// ParseTrailer parses the last 12 bytes of a tree document.
+// ParseTrailer parses the last 8 bytes of a document footer.
 func ParseTrailer(b []byte) (Trailer, error) {
-	if len(b) < TrailerSize {
-		return Trailer{}, fmt.Errorf("trailer too short: %d", len(b))
+	if len(b) < len(HeaderMagic)+TrailerSize {
+		return Trailer{}, fmt.Errorf("document too short: %d", len(b))
 	}
-	if !bytes.Equal(b[len(b)-4:], TrailerMagic[:]) {
-		return Trailer{}, fmt.Errorf("missing TRON trailer magic")
+	if !bytes.Equal(b[:len(HeaderMagic)], HeaderMagic[:]) {
+		return Trailer{}, fmt.Errorf("missing TRON header magic")
 	}
 	start := len(b) - TrailerSize
 	return Trailer{
@@ -40,6 +37,5 @@ func AppendTrailer(dst []byte, t Trailer) []byte {
 	buf := make([]byte, TrailerSize)
 	binary.LittleEndian.PutUint32(buf[0:4], t.RootOffset)
 	binary.LittleEndian.PutUint32(buf[4:8], t.PrevRootOffset)
-	copy(buf[8:12], TrailerMagic[:])
 	return append(dst, buf...)
 }
