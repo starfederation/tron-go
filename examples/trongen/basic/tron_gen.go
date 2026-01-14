@@ -4,8 +4,6 @@ package basic
 
 import (
 	"github.com/starfederation/tron-go"
-	tronruntime "github.com/starfederation/tron-go/runtime"
-	tronjson "github.com/starfederation/tron-go/runtime/json"
 )
 
 func AddressFromTRON(doc []byte) (*AddressTRON, error) {
@@ -329,34 +327,34 @@ func (t *UserTRON) Raw() []byte {
 }
 
 var (
-	trongenProxyErrNoData      = tronruntime.ErrTronProxyNoData
-	trongenProxyErrFieldNotMap = tronruntime.ErrTronProxyFieldNotMap
+	trongenProxyErrNoData      = tron.ErrTronProxyNoData
+	trongenProxyErrFieldNotMap = tron.ErrTronProxyFieldNotMap
 )
 
 func trongenProxyMapRoot(doc []byte) (uint32, error) {
-	return tronruntime.MapRoot(doc)
+	return tron.MapRoot(doc)
 }
 
 func trongenProxyDocForRoot(doc []byte, root uint32) ([]byte, error) {
-	return tronruntime.DocForRoot(doc, root)
+	return tron.DocForRoot(doc, root)
 }
 
 func trongenProxyGetFieldValue(doc []byte, root uint32, key string, hash uint32) (tron.Value, bool, error) {
-	return tronruntime.GetFieldValue(doc, root, key, hash)
+	return tron.GetFieldValue(doc, root, key, hash)
 }
 
 func trongenProxySetFieldValue(doc []byte, root uint32, key string, hash uint32, value any) ([]byte, uint32, error) {
-	return tronruntime.SetFieldValue(doc, root, key, hash, value)
+	return tron.SetFieldValue(doc, root, key, hash, value)
 }
 
 func trongenProxyMarshal(v any) ([]byte, error) {
-	return tronjson.Marshal(v)
+	return tron.Marshal(v)
 }
 
 func trongenProxyUnmarshal(doc []byte, out any) error {
-	return tronjson.Unmarshal(doc, out)
+	return tron.Unmarshal(doc, out)
 }
 
 func trongenProxyUnmarshalValue(doc []byte, v tron.Value, out any) error {
-	return tronjson.UnmarshalValue(doc, v, out)
+	return tron.UnmarshalValue(doc, v, out)
 }

@@ -406,18 +406,12 @@ func generatePackage(info *packageInfo, moduleRoot, modulePath string) ([]byte, 
 
 	isRootPackage := info.Dir == moduleRoot
 	tronPrefix := "tron."
-	runtimePath := modulePath + "/runtime"
-	jsonRuntimePath := runtimePath + "/json"
 	var imports []string
 	if isRootPackage {
 		tronPrefix = ""
 		imports = append(imports, "errors", `stdjson "encoding/json"`)
 	} else {
-		imports = append(imports,
-			fmt.Sprintf("tronruntime %q", runtimePath),
-			fmt.Sprintf("tronjson %q", jsonRuntimePath),
-			fmt.Sprintf("%q", modulePath),
-		)
+		imports = append(imports, fmt.Sprintf("%q", modulePath))
 	}
 	sort.Strings(imports)
 
@@ -431,7 +425,6 @@ func generatePackage(info *packageInfo, moduleRoot, modulePath string) ([]byte, 
 		Imports:       imports,
 		Structs:       info.Structs,
 		TronPrefix:    tronPrefix,
-		RuntimePath:   runtimePath,
 		IsRootPackage: isRootPackage,
 	}); err != nil {
 		return nil, err
@@ -449,7 +442,6 @@ type templateData struct {
 	Imports       []string
 	Structs       []structInfo
 	TronPrefix    string
-	RuntimePath   string
 	IsRootPackage bool
 }
 
