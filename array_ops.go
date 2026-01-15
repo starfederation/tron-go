@@ -1,6 +1,9 @@
 package tron
 
-import "fmt"
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 // ArrGet returns the value at index, if present.
 func ArrGet(doc []byte, rootOff uint32, index uint32) (Value, bool, error) {
@@ -181,51 +184,86 @@ func arrayRootLength(doc []byte, rootOff uint32) (uint32, error) {
 }
 
 func arrGet(doc []byte, off uint32, index uint32, isRoot bool) (Value, bool, error) {
-	h, node, err := NodeSliceAt(doc, off)
-	if err != nil {
-		return Value{}, false, err
-	}
-	if h.KeyType != KeyArr {
-		return Value{}, false, fmt.Errorf("node is not an array")
-	}
-	if h.Kind == NodeLeaf {
-		leaf, err := ParseArrayLeafNode(node)
+	for {
+		h, node, err := NodeSliceAt(doc, off)
 		if err != nil {
 			return Value{}, false, err
 		}
-		defer releaseArrayLeafNode(&leaf)
-		if !isRoot && leaf.Header.IsRoot {
-			return Value{}, false, fmt.Errorf("array non-root leaf marked as root")
+		if h.KeyType != KeyArr {
+			return Value{}, false, fmt.Errorf("node is not an array")
 		}
-		slot := uint8(index & 0xF)
-		if ((leaf.Bitmap >> slot) & 1) == 0 {
+		if h.Kind == NodeLeaf {
+			if !isRoot && h.IsRoot {
+				return Value{}, false, fmt.Errorf("array non-root leaf marked as root")
+			}
+			p := 1 + h.LenBytes
+			if int(h.NodeLen) < p+3 {
+				return Value{}, false, fmt.Errorf("array leaf node too small: %d", h.NodeLen)
+			}
+			shift := node[p]
+			p++
+			if shift != 0 {
+				return Value{}, false, fmt.Errorf("array leaf shift must be 0")
+			}
+			bitmap := binary.LittleEndian.Uint16(node[p : p+2])
+			p += 2
+			if h.IsRoot {
+				if p+4 > int(h.NodeLen) {
+					return Value{}, false, fmt.Errorf("array leaf root length truncated")
+				}
+				p += 4
+			}
+			slot := uint8(index & 0xF)
+			if ((bitmap >> slot) & 1) == 0 {
+				return Value{}, false, nil
+			}
+			mask := uint16((uint32(1) << slot) - 1)
+			idx := popcount16(bitmap & mask)
+			addrPos := p + idx*4
+			if addrPos+4 > int(h.NodeLen) {
+				return Value{}, false, fmt.Errorf("value address truncated")
+			}
+			addr := binary.LittleEndian.Uint32(node[addrPos : addrPos+4])
+			val, err := DecodeValueAt(doc, addr)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return val, true, nil
+		}
+
+		if !isRoot && h.IsRoot {
+			return Value{}, false, fmt.Errorf("array non-root branch marked as root")
+		}
+		p := 1 + h.LenBytes
+		if int(h.NodeLen) < p+3 {
+			return Value{}, false, fmt.Errorf("array branch node too small: %d", h.NodeLen)
+		}
+		shift := node[p]
+		p++
+		if shift%4 != 0 {
+			return Value{}, false, fmt.Errorf("array branch shift must be multiple of 4")
+		}
+		bitmap := binary.LittleEndian.Uint16(node[p : p+2])
+		p += 2
+		if h.IsRoot {
+			if p+4 > int(h.NodeLen) {
+				return Value{}, false, fmt.Errorf("array branch root length truncated")
+			}
+			p += 4
+		}
+		slot := uint8((index >> shift) & 0xF)
+		if ((bitmap >> slot) & 1) == 0 {
 			return Value{}, false, nil
 		}
 		mask := uint16((uint32(1) << slot) - 1)
-		idx := popcount16(leaf.Bitmap & mask)
-		addr := leaf.ValueAddrs[idx]
-		val, err := DecodeValueAt(doc, addr)
-		if err != nil {
-			return Value{}, false, err
+		idx := popcount16(bitmap & mask)
+		childPos := p + idx*4
+		if childPos+4 > int(h.NodeLen) {
+			return Value{}, false, fmt.Errorf("child address truncated")
 		}
-		return val, true, nil
+		off = binary.LittleEndian.Uint32(node[childPos : childPos+4])
+		isRoot = false
 	}
-	branch, err := ParseArrayBranchNode(node)
-	if err != nil {
-		return Value{}, false, err
-	}
-	defer releaseArrayBranchNode(&branch)
-	if !isRoot && branch.Header.IsRoot {
-		return Value{}, false, fmt.Errorf("array non-root branch marked as root")
-	}
-	slot := uint8((index >> branch.Shift) & 0xF)
-	if ((branch.Bitmap >> slot) & 1) == 0 {
-		return Value{}, false, nil
-	}
-	mask := uint16((uint32(1) << slot) - 1)
-	idx := popcount16(branch.Bitmap & mask)
-	child := branch.Children[idx]
-	return arrGet(doc, child, index, false)
 }
 
 func arrSet(builder *Builder, rootOff uint32, index uint32, value Value, length uint32) (uint32, error) {
@@ -295,58 +333,86 @@ func arrSetNode(doc []byte, off uint32, index uint32, value Value, builder *Buil
 		return 0, false, fmt.Errorf("node is not an array")
 	}
 	if h.Kind == NodeLeaf {
-		leaf, err := ParseArrayLeafNode(node)
-		if err != nil {
-			return 0, false, err
-		}
-		defer releaseArrayLeafNode(&leaf)
-		if !isRoot && leaf.Header.IsRoot {
+		if !isRoot && h.IsRoot {
 			return 0, false, fmt.Errorf("array non-root leaf marked as root")
+		}
+		p := 1 + h.LenBytes
+		if int(h.NodeLen) < p+3 {
+			return 0, false, fmt.Errorf("array leaf node too small: %d", h.NodeLen)
+		}
+		shift := node[p]
+		p++
+		if shift != 0 {
+			return 0, false, fmt.Errorf("array leaf shift must be 0")
+		}
+		bitmap := binary.LittleEndian.Uint16(node[p : p+2])
+		p += 2
+		length := uint32(0)
+		if h.IsRoot {
+			if p+4 > int(h.NodeLen) {
+				return 0, false, fmt.Errorf("array leaf root length truncated")
+			}
+			length = binary.LittleEndian.Uint32(node[p : p+4])
+			p += 4
 		}
 		slot := uint8(index & 0xF)
 		mask := uint16((uint32(1) << slot) - 1)
-		idx := popcount16(leaf.Bitmap & mask)
-		has := ((leaf.Bitmap >> slot) & 1) == 1
+		idx := popcount16(bitmap & mask)
+		has := ((bitmap >> slot) & 1) == 1
 		if has {
-			cur, err := DecodeValueAt(doc, leaf.ValueAddrs[idx])
+			addrPos := p + idx*4
+			if addrPos+4 > int(h.NodeLen) {
+				return 0, false, fmt.Errorf("value address truncated")
+			}
+			cur, err := DecodeValueAt(doc, binary.LittleEndian.Uint32(node[addrPos:addrPos+4]))
 			if err != nil {
 				return 0, false, err
 			}
-			if valueEqual(cur, value) {
-				if !isRoot || leaf.Length == rootLength {
-					return off, false, nil
-				}
+			if valueEqual(cur, value) && (!isRoot || length == rootLength) {
+				return off, false, nil
 			}
 		}
 		newAddr, err := valueAddress(builder, value)
 		if err != nil {
 			return 0, false, err
 		}
-		values := leaf.ValueAddrs
-		var newValues []uint32
-		if has {
-			newValues = getUint32Slice(len(values))
-			copy(newValues, values)
-			newValues[idx] = newAddr
-		} else {
-			newValues = getUint32Slice(len(values) + 1)
-			copy(newValues, values[:idx])
-			newValues[idx] = newAddr
-			copy(newValues[idx+1:], values[idx:])
-		}
-		bitmap := leaf.Bitmap
+		entryCount := popcount16(bitmap)
+		newValues := getUint32Slice(entryCount)
 		if !has {
+			newValues = getUint32Slice(entryCount + 1)
+		}
+		pos := p
+		if has {
+			for i := 0; i < entryCount; i++ {
+				addr := binary.LittleEndian.Uint32(node[pos : pos+4])
+				pos += 4
+				if i == idx {
+					addr = newAddr
+				}
+				newValues[i] = addr
+			}
+		} else {
+			for i := 0; i < idx; i++ {
+				newValues[i] = binary.LittleEndian.Uint32(node[pos : pos+4])
+				pos += 4
+			}
+			newValues[idx] = newAddr
+			for i := idx; i < entryCount; i++ {
+				newValues[i+1] = binary.LittleEndian.Uint32(node[pos : pos+4])
+				pos += 4
+			}
 			bitmap |= 1 << slot
 		}
-		length := uint32(0)
 		if isRoot {
 			length = rootLength
+		} else {
+			length = 0
 		}
 		newLeaf := ArrayLeafNode{
-			Header: NodeHeader{Kind: NodeLeaf, KeyType: KeyArr, IsRoot: isRoot},
-			Shift:  0,
-			Bitmap: bitmap,
-			Length: length,
+			Header:     NodeHeader{Kind: NodeLeaf, KeyType: KeyArr, IsRoot: isRoot},
+			Shift:      0,
+			Bitmap:     bitmap,
+			Length:     length,
 			ValueAddrs: newValues,
 		}
 		newOff, err := appendArrayLeafNode(builder, newLeaf)
@@ -357,65 +423,98 @@ func arrSetNode(doc []byte, off uint32, index uint32, value Value, builder *Buil
 		return newOff, true, nil
 	}
 
-	branch, err := ParseArrayBranchNode(node)
-	if err != nil {
-		return 0, false, err
-	}
-	defer releaseArrayBranchNode(&branch)
-	if !isRoot && branch.Header.IsRoot {
+	if !isRoot && h.IsRoot {
 		return 0, false, fmt.Errorf("array non-root branch marked as root")
 	}
-	slot := uint8((index >> branch.Shift) & 0xF)
+	p := 1 + h.LenBytes
+	if int(h.NodeLen) < p+3 {
+		return 0, false, fmt.Errorf("array branch node too small: %d", h.NodeLen)
+	}
+	shift := node[p]
+	p++
+	if shift%4 != 0 {
+		return 0, false, fmt.Errorf("array branch shift must be multiple of 4")
+	}
+	bitmap := binary.LittleEndian.Uint16(node[p : p+2])
+	p += 2
+	length := uint32(0)
+	if h.IsRoot {
+		if p+4 > int(h.NodeLen) {
+			return 0, false, fmt.Errorf("array branch root length truncated")
+		}
+		length = binary.LittleEndian.Uint32(node[p : p+4])
+		p += 4
+	}
+	entryCount := popcount16(bitmap)
+	childrenBytes := entryCount * 4
+	if int(h.NodeLen) < p+childrenBytes {
+		return 0, false, fmt.Errorf("child address truncated")
+	}
+	slot := uint8((index >> shift) & 0xF)
 	mask := uint16((uint32(1) << slot) - 1)
-	idx := popcount16(branch.Bitmap & mask)
-	has := ((branch.Bitmap >> slot) & 1) == 1
+	idx := popcount16(bitmap & mask)
+	has := ((bitmap >> slot) & 1) == 1
 
 	var child uint32
 	if has {
-		oldChild := branch.Children[idx]
+		childPos := p + idx*4
+		oldChild := binary.LittleEndian.Uint32(node[childPos : childPos+4])
 		newChild, childChanged, err := arrSetNode(doc, oldChild, index, value, builder, false, 0)
 		if err != nil {
 			return 0, false, err
 		}
-		if !childChanged && (!isRoot || branch.Length == rootLength) {
+		if !childChanged && (!isRoot || length == rootLength) {
 			return off, false, nil
 		}
 		child = newChild
 	} else {
-		newChild, err := buildArrayPath(index, branch.Shift-4, value, builder)
+		newChild, err := buildArrayPath(index, shift-4, value, builder)
 		if err != nil {
 			return 0, false, err
 		}
 		child = newChild
 	}
 
-	bitmap := branch.Bitmap
-	children := branch.Children
-	if has {
-		children[idx] = child
-	} else {
-		bitmap |= 1 << slot
-		newChildren := getUint32Slice(len(children) + 1)
-		copy(newChildren, children[:idx])
-		newChildren[idx] = child
-		copy(newChildren[idx+1:], children[idx:])
-		children = newChildren
+	newChildren := getUint32Slice(entryCount)
+	if !has {
+		newChildren = getUint32Slice(entryCount + 1)
 	}
-	length := uint32(0)
+	pos := p
+	if has {
+		for i := 0; i < entryCount; i++ {
+			addr := binary.LittleEndian.Uint32(node[pos : pos+4])
+			pos += 4
+			if i == idx {
+				addr = child
+			}
+			newChildren[i] = addr
+		}
+	} else {
+		for i := 0; i < idx; i++ {
+			newChildren[i] = binary.LittleEndian.Uint32(node[pos : pos+4])
+			pos += 4
+		}
+		newChildren[idx] = child
+		for i := idx; i < entryCount; i++ {
+			newChildren[i+1] = binary.LittleEndian.Uint32(node[pos : pos+4])
+			pos += 4
+		}
+		bitmap |= 1 << slot
+	}
 	if isRoot {
 		length = rootLength
+	} else {
+		length = 0
 	}
 	newBranch := ArrayBranchNode{
 		Header:   NodeHeader{Kind: NodeBranch, KeyType: KeyArr, IsRoot: isRoot},
-		Shift:    branch.Shift,
+		Shift:    shift,
 		Bitmap:   bitmap,
 		Length:   length,
-		Children: children,
+		Children: newChildren,
 	}
 	newOff, err := appendArrayBranchNode(builder, newBranch)
-	if !has {
-		putUint32Slice(children)
-	}
+	putUint32Slice(newChildren)
 	if err != nil {
 		return 0, false, err
 	}
@@ -433,10 +532,10 @@ func buildArrayPath(index uint32, shift uint8, value Value, builder *Builder) (u
 			return 0, err
 		}
 		leaf := ArrayLeafNode{
-			Header: NodeHeader{Kind: NodeLeaf, KeyType: KeyArr, IsRoot: false},
-			Shift:  0,
-			Bitmap: 1 << slot,
-			Length: 0,
+			Header:     NodeHeader{Kind: NodeLeaf, KeyType: KeyArr, IsRoot: false},
+			Shift:      0,
+			Bitmap:     1 << slot,
+			Length:     0,
 			ValueAddrs: []uint32{addr},
 		}
 		return appendArrayLeafNode(builder, leaf)

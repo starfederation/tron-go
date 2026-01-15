@@ -2,6 +2,7 @@ package tron
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"math"
 )
@@ -11,40 +12,76 @@ func mapGet(doc []byte, off uint32, key []byte, depth int) (Value, bool, error) 
 }
 
 func mapGetHashed(doc []byte, off uint32, key []byte, hash uint32, depth int) (Value, bool, error) {
-	h, node, err := NodeSliceAt(doc, off)
-	if err != nil {
-		return Value{}, false, err
-	}
-	if h.KeyType != KeyMap {
-		return Value{}, false, fmt.Errorf("node is not a map")
-	}
-	if h.Kind == NodeLeaf {
-		leaf, err := ParseMapLeafNode(doc, node)
+	for {
+		h, node, err := NodeSliceAt(doc, off)
 		if err != nil {
 			return Value{}, false, err
 		}
-		defer releaseMapLeafNode(&leaf)
-		for _, entry := range leaf.Entries {
-			if bytes.Equal(entry.Key, key) {
-				return entry.Value, true, nil
-			}
+		if h.KeyType != KeyMap {
+			return Value{}, false, fmt.Errorf("node is not a map")
 		}
-		return Value{}, false, nil
-	}
+		if h.Kind == NodeLeaf {
+			return mapLeafGetValue(doc, h, node, key)
+		}
 
-	branch, err := ParseMapBranchNode(node)
-	if err != nil {
-		return Value{}, false, err
+		p := 1 + h.LenBytes
+		if int(h.NodeLen) < p+4 {
+			return Value{}, false, fmt.Errorf("map branch node too small: %d", h.NodeLen)
+		}
+		bitmap := binary.LittleEndian.Uint32(node[p : p+4])
+		if bitmap&0xFFFF0000 != 0 {
+			return Value{}, false, fmt.Errorf("map branch bitmap high bits must be zero")
+		}
+		slot := uint8((hash >> (depth * 4)) & hamtMask)
+		if ((bitmap >> slot) & 1) == 0 {
+			return Value{}, false, nil
+		}
+		mask := uint32((uint32(1) << slot) - 1)
+		idx := popcount16(uint16(bitmap & mask))
+		childPos := p + 4 + (idx * 4)
+		if childPos+4 > int(h.NodeLen) {
+			return Value{}, false, fmt.Errorf("child address truncated")
+		}
+		off = binary.LittleEndian.Uint32(node[childPos : childPos+4])
+		depth++
 	}
-	defer releaseMapBranchNode(&branch)
-	slot := uint8((hash >> (depth * 4)) & hamtMask)
-	if ((branch.Bitmap >> slot) & 1) == 0 {
-		return Value{}, false, nil
+}
+
+func mapLeafGetValue(doc []byte, h NodeHeader, node []byte, key []byte) (Value, bool, error) {
+	p := 1 + h.LenBytes
+	payloadLen := int(h.NodeLen) - p
+	if payloadLen%8 != 0 {
+		return Value{}, false, fmt.Errorf("map leaf payload misaligned")
 	}
-	mask := uint32((uint32(1) << slot) - 1)
-	idx := popcount16(uint16(branch.Bitmap & mask))
-	child := branch.Children[idx]
-	return mapGetHashed(doc, child, key, hash, depth+1)
+	entryCount := payloadLen / 8
+	for i := 0; i < entryCount; i++ {
+		if p+8 > int(h.NodeLen) {
+			return Value{}, false, fmt.Errorf("map leaf entry truncated")
+		}
+		keyAddr := binary.LittleEndian.Uint32(node[p : p+4])
+		valAddr := binary.LittleEndian.Uint32(node[p+4 : p+8])
+		p += 8
+
+		keyVal, err := DecodeValueAt(doc, keyAddr)
+		if err != nil {
+			return Value{}, false, fmt.Errorf("key decode failed: %w", err)
+		}
+		if keyVal.Type != TypeTxt {
+			return Value{}, false, fmt.Errorf("map leaf key must be txt")
+		}
+		cmp := bytesCompare(keyVal.Bytes, key)
+		if cmp == 0 {
+			val, err := DecodeValueAt(doc, valAddr)
+			if err != nil {
+				return Value{}, false, fmt.Errorf("value decode failed: %w", err)
+			}
+			return val, true, nil
+		}
+		if cmp > 0 {
+			return Value{}, false, nil
+		}
+	}
+	return Value{}, false, nil
 }
 
 // MapGet returns the value for key under the map node at rootOff.
@@ -115,51 +152,118 @@ func mapSetHashed(doc []byte, off uint32, key []byte, val Value, hash uint32, de
 		return 0, false, fmt.Errorf("node is not a map")
 	}
 	if h.Kind == NodeLeaf {
-		leaf, err := ParseMapLeafNode(doc, node)
-		if err != nil {
-			return 0, false, err
+		return mapSetLeaf(doc, off, h, node, key, val, depth, builder)
+	}
+	return mapSetBranch(doc, off, h, node, key, val, hash, depth, builder)
+}
+
+func mapSetLeaf(doc []byte, off uint32, h NodeHeader, node []byte, key []byte, val Value, depth int, builder *Builder) (uint32, bool, error) {
+	p := 1 + h.LenBytes
+	payloadLen := int(h.NodeLen) - p
+	if payloadLen%8 != 0 {
+		return 0, false, fmt.Errorf("map leaf payload misaligned")
+	}
+	entryCount := payloadLen / 8
+	entries := getEntrySlice(entryCount)
+	var prevKey []byte
+	foundIdx := -1
+	for i := 0; i < entryCount; i++ {
+		if p+8 > int(h.NodeLen) {
+			putEntrySlice(entries)
+			return 0, false, fmt.Errorf("map leaf entry truncated")
 		}
-		defer releaseMapLeafNode(&leaf)
-		entries := leaf.Entries
-		for i, entry := range entries {
-			if bytes.Equal(entry.Key, key) {
-				if valueEqual(entry.Value, val) {
-					return off, false, nil
-				}
-				newEntries := make([]MapLeafEntry, len(entries))
-				copy(newEntries, entries)
-				newEntries[i].Value = val
-				newNode := buildMapNodeFromEntries(newEntries, depth, nil)
-				newOff, err := encodeMapNode(builder, newNode, nil)
-				if err != nil {
-					return 0, false, err
-				}
-				return newOff, true, nil
+		keyAddr := binary.LittleEndian.Uint32(node[p : p+4])
+		valAddr := binary.LittleEndian.Uint32(node[p+4 : p+8])
+		p += 8
+
+		keyVal, err := DecodeValueAt(doc, keyAddr)
+		if err != nil {
+			putEntrySlice(entries)
+			return 0, false, fmt.Errorf("key decode failed: %w", err)
+		}
+		if keyVal.Type != TypeTxt {
+			putEntrySlice(entries)
+			return 0, false, fmt.Errorf("map leaf key must be txt")
+		}
+		if i > 0 {
+			if cmp := bytesCompare(prevKey, keyVal.Bytes); cmp >= 0 {
+				putEntrySlice(entries)
+				return 0, false, fmt.Errorf("map leaf keys must be sorted and unique")
 			}
 		}
-		newEntries := make([]MapLeafEntry, len(entries)+1)
-		copy(newEntries, entries)
-		newEntries[len(entries)] = MapLeafEntry{Key: key, Value: val}
-		newNode := buildMapNodeFromEntries(newEntries, depth, nil)
+		prevKey = keyVal.Bytes
+
+		entryVal, err := DecodeValueAt(doc, valAddr)
+		if err != nil {
+			putEntrySlice(entries)
+			return 0, false, fmt.Errorf("value decode failed: %w", err)
+		}
+		entries[i] = MapLeafEntry{
+			KeyAddr:   keyAddr,
+			ValueAddr: valAddr,
+			Key:       keyVal.Bytes,
+			Value:     entryVal,
+		}
+		if foundIdx == -1 && bytes.Equal(keyVal.Bytes, key) {
+			foundIdx = i
+		}
+	}
+	if foundIdx >= 0 && valueEqual(entries[foundIdx].Value, val) {
+		putEntrySlice(entries)
+		return off, false, nil
+	}
+	if foundIdx >= 0 {
+		entries[foundIdx].Value = val
+		newNode := buildMapNodeFromEntries(entries, depth, nil)
 		newOff, err := encodeMapNode(builder, newNode, nil)
+		putEntrySlice(entries)
 		if err != nil {
 			return 0, false, err
 		}
 		return newOff, true, nil
 	}
-
-	branch, err := ParseMapBranchNode(node)
+	if cap(entries) > len(entries) {
+		entries = append(entries, MapLeafEntry{Key: key, Value: val})
+	} else {
+		newEntries := getEntrySlice(entryCount + 1)
+		copy(newEntries, entries)
+		newEntries[entryCount] = MapLeafEntry{Key: key, Value: val}
+		putEntrySlice(entries)
+		entries = newEntries
+	}
+	newNode := buildMapNodeFromEntries(entries, depth, nil)
+	newOff, err := encodeMapNode(builder, newNode, nil)
+	putEntrySlice(entries)
 	if err != nil {
 		return 0, false, err
 	}
-	defer releaseMapBranchNode(&branch)
+	return newOff, true, nil
+}
+
+func mapSetBranch(doc []byte, off uint32, h NodeHeader, node []byte, key []byte, val Value, hash uint32, depth int, builder *Builder) (uint32, bool, error) {
+	p := 1 + h.LenBytes
+	if int(h.NodeLen) < p+4 {
+		return 0, false, fmt.Errorf("map branch node too small: %d", h.NodeLen)
+	}
+	bitmap := binary.LittleEndian.Uint32(node[p : p+4])
+	if bitmap&0xFFFF0000 != 0 {
+		return 0, false, fmt.Errorf("map branch bitmap high bits must be zero")
+	}
+	p += 4
+	entryCount := popcount16(uint16(bitmap))
+	childrenBytes := entryCount * 4
+	if int(h.NodeLen) < p+childrenBytes {
+		return 0, false, fmt.Errorf("child address truncated")
+	}
+
 	slot := uint8((hash >> (depth * 4)) & hamtMask)
 	mask := uint32((uint32(1) << slot) - 1)
-	idx := popcount16(uint16(branch.Bitmap & mask))
-	hasChild := ((branch.Bitmap >> slot) & 1) == 1
+	idx := popcount16(uint16(bitmap & mask))
+	hasChild := ((bitmap >> slot) & 1) == 1
 
 	if hasChild {
-		child := branch.Children[idx]
+		childPos := p + idx*4
+		child := binary.LittleEndian.Uint32(node[childPos : childPos+4])
 		newChild, changed, err := mapSetHashed(doc, child, key, val, hash, depth+1, builder)
 		if err != nil {
 			return 0, false, err
@@ -167,14 +271,23 @@ func mapSetHashed(doc []byte, off uint32, key []byte, val Value, hash uint32, de
 		if !changed {
 			return off, false, nil
 		}
-		children := branch.Children
-		children[idx] = newChild
+		children := getUint32Slice(entryCount)
+		pos := p
+		for i := 0; i < entryCount; i++ {
+			addr := binary.LittleEndian.Uint32(node[pos : pos+4])
+			pos += 4
+			if i == idx {
+				addr = newChild
+			}
+			children[i] = addr
+		}
 		newBranch := MapBranchNode{
 			Header:   NodeHeader{Kind: NodeBranch, KeyType: KeyMap},
-			Bitmap:   branch.Bitmap,
+			Bitmap:   bitmap,
 			Children: children,
 		}
 		newOff, err := appendMapBranchNode(builder, newBranch)
+		putUint32Slice(children)
 		if err != nil {
 			return 0, false, err
 		}
@@ -186,11 +299,18 @@ func mapSetHashed(doc []byte, off uint32, key []byte, val Value, hash uint32, de
 	if err != nil {
 		return 0, false, err
 	}
-	newBitmap := branch.Bitmap | (uint32(1) << slot)
-	children := getUint32Slice(len(branch.Children) + 1)
-	copy(children, branch.Children[:idx])
+	newBitmap := bitmap | (uint32(1) << slot)
+	children := getUint32Slice(entryCount + 1)
+	pos := p
+	for i := 0; i < idx; i++ {
+		children[i] = binary.LittleEndian.Uint32(node[pos : pos+4])
+		pos += 4
+	}
 	children[idx] = newChild
-	copy(children[idx+1:], branch.Children[idx:])
+	for i := idx; i < entryCount; i++ {
+		children[i+1] = binary.LittleEndian.Uint32(node[pos : pos+4])
+		pos += 4
+	}
 	newBranch := MapBranchNode{
 		Header:   NodeHeader{Kind: NodeBranch, KeyType: KeyMap},
 		Bitmap:   newBitmap,
